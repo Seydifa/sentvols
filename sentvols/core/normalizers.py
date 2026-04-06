@@ -716,6 +716,180 @@ class LlamaCppBackend:
 
 
 # ---------------------------------------------------------------------------
+# VLLMBackend  (vLLM offline engine — PagedAttention, continuous batching)
+# ---------------------------------------------------------------------------
+
+
+@registration(module="utils")
+class VLLMBackend:
+    """Backend using vLLM's offline inference engine.
+
+    vLLM provides **PagedAttention** and **continuous batching** which
+    typically gives 3–10× higher throughput than the vanilla Transformers
+    ``generate()`` path for the same model.
+
+    Works best with decoder-only instruct models (LLaMA, Mistral, Qwen, Phi …).
+    Install with: ``pip install vllm``.
+
+    Parameters
+    ----------
+    model : str
+        HuggingFace repo ID or local path.  Recommended for Colab L4 24 GB
+        (after freeing other models through ``del model; gc.collect()``):
+
+        * ``"Qwen/Qwen2.5-3B-Instruct"``        — 3 B, ~6 GB fp16, very fast
+        * ``"Qwen/Qwen2.5-7B-Instruct"``        — 7 B, ~14 GB fp16
+        * ``"meta-llama/Llama-3.2-3B-Instruct"``— 3 B, ~6 GB fp16
+
+    max_new_tokens : int, default 16
+        Keep very small for pure scoring (output is a number like ``0.7``).
+    temperature : float, default 0.0
+        0 = greedy / deterministic.
+    gpu_memory_utilization : float, default 0.90
+        Fraction of GPU memory vLLM allocates for its KV-cache.
+    dtype : str, default ``"auto"``
+        ``"auto"``, ``"float16"``, or ``"bfloat16"``.
+    use_chat_template : bool, default ``True``
+        Wraps prompts in the model's Jinja chat template via
+        ``AutoTokenizer.apply_chat_template``.  This is essential for
+        instruct models (Qwen, LLaMA-Instruct, …) to follow the scoring
+        instruction reliably.
+    trust_remote_code : bool, default ``True``
+        Required for Qwen models.
+
+    Notes
+    -----
+    ``batch_call(prompts)`` submits all prompts as a single vLLM request —
+    this is the primary performance advantage: vLLM fills idle KV-cache slots
+    across requests (continuous batching) whereas sequential ``call()`` calls
+    cannot benefit from this.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        max_new_tokens: int = 16,
+        temperature: float = 0.0,
+        gpu_memory_utilization: float = 0.90,
+        dtype: str = "auto",
+        use_chat_template: bool = True,
+        trust_remote_code: bool = True,
+    ) -> None:
+        self._model = model
+        self._max_new_tokens = max_new_tokens
+        self._temperature = temperature
+        self._gpu_memory_utilization = gpu_memory_utilization
+        self._dtype = dtype
+        self._use_chat_template = use_chat_template
+        self._trust_remote_code = trust_remote_code
+        self._engine = None  # lazy-init on first call
+        self._tokenizer = None
+        self._sampling_params = None
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def reasoning_available(self) -> bool:
+        return False
+
+    # ------------------------------------------------------------------
+    # Engine initialisation (lazy)
+    # ------------------------------------------------------------------
+
+    def _ensure_engine(self) -> None:
+        if self._engine is not None:
+            return
+        try:
+            from vllm import LLM, SamplingParams
+        except ImportError as exc:
+            raise ImportError(
+                "The 'vllm' package is required for VLLMBackend.  "
+                "Install it with:  pip install vllm"
+            ) from exc
+
+        self._engine = LLM(
+            model=self._model,
+            gpu_memory_utilization=self._gpu_memory_utilization,
+            dtype=self._dtype,
+            trust_remote_code=self._trust_remote_code,
+            enforce_eager=True,  # disable CUDA graph capture → faster first call
+        )
+        self._sampling_params = SamplingParams(
+            max_tokens=self._max_new_tokens,
+            temperature=self._temperature,
+        )
+        if self._use_chat_template:
+            from transformers import AutoTokenizer
+
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                self._model, trust_remote_code=self._trust_remote_code
+            )
+
+    # ------------------------------------------------------------------
+    # Prompt formatting (chat template)
+    # ------------------------------------------------------------------
+
+    def _format(self, prompt: str) -> str:
+        """Apply the model's chat template if requested."""
+        if not (self._use_chat_template and self._tokenizer is not None):
+            return prompt
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a financial sentiment scorer.  "
+                    "Always respond with ONLY a single decimal number between "
+                    "-1.0 and 1.0.  No words, no explanation, just the number."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        return self._tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def call(self, prompt: str) -> tuple[str, None]:
+        """Single-sample inference.  Returns ``(score_text, None)``."""
+        self._ensure_engine()
+        outputs = self._engine.generate([self._format(prompt)], self._sampling_params)
+        return outputs[0].outputs[0].text.strip(), None
+
+    def batch_call(self, prompts: list[str]) -> list[tuple[str, None]]:
+        """Batch inference — submits all prompts in **one** vLLM request.
+
+        vLLM's PagedAttention engine fills idle KV-cache slots across the
+        batch (continuous batching) which gives 3–8× higher throughput than
+        looping over ``call()`` for the same number of inputs.
+
+        Parameters
+        ----------
+        prompts : list[str]
+            Raw (pre-chat-template) prompt strings.
+
+        Returns
+        -------
+        list of (score_text, None) tuples, in input order.
+        """
+        self._ensure_engine()
+        formatted = [self._format(p) for p in prompts]
+        outputs = self._engine.generate(formatted, self._sampling_params)
+        return [(o.outputs[0].text.strip(), None) for o in outputs]
+
+    def __repr__(self) -> str:
+        return (
+            f"VLLMBackend(model={self._model!r}, "
+            f"gpu_memory_utilization={self._gpu_memory_utilization}, "
+            f"dtype={self._dtype!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # FinancialTextNormalizer
 # ---------------------------------------------------------------------------
 
