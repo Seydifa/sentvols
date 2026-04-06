@@ -1,0 +1,597 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[french]{babel}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\graphicspath{{/home/mseydifaye/Documents/Econometrie des marches financieres/project de session/projet/figures/}}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning}
+
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{fancyhdr}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{siunitx}
+\usepackage{csvsimple}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage[table]{xcolor}
+    
+\geometry{margin=1in}
+\setlength{\headheight}{14pt}
+
+% Code listing style
+\lstset{
+    language=Matlab,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    breaklines=true,
+    showstringspaces=false
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Partie I - Econométrie des Marchés Financiers}
+\lhead{\today}
+\cfoot{\thepage}
+
+\usepackage{titling}
+\usepackage{tcolorbox}
+
+% University colors (light blue theme)
+\definecolor{umontrealblue}{RGB}{0, 85, 150}
+\definecolor{umontreallight}{RGB}{220, 237, 247}
+
+\title{
+    \vspace{-2cm}
+    \begin{tcolorbox}[colback=umontreallight, colframe=umontrealblue, boxrule=2pt, arc=10pt]
+        \centering
+        \includegraphics[width=2cm]{/home/mseydifaye/Documents/Econometrie des marches financieres/project de session/projet/figures/universite-de-montreal-logo-png-transparent.png} \\
+        \vspace{0.3cm}
+        \Large \textbf{Université de Montréal} \\
+        \vspace{0.3cm}
+        \normalsize Département de Mathématiques et Statistique \\
+        \vspace{1cm}
+        \huge \textbf{Projet FINTECH} \\
+        \vspace{0.3cm}
+        \LARGE \textbf{Sentivol : Analyse de Sentiment, Volatilité et Composition de portefeuille} \\
+        \vspace{0.8cm}
+        \Large ECN 6578A -- Économétrie des Marchés Financiers \\
+        \vspace{0.5cm}
+    \end{tcolorbox}
+}
+
+\author{
+    \textbf{Étudiants:} Moussa Seydi Faye \\
+    \vspace{0.3cm}
+    \textbf{Professeur:} Robert NORMAND \\
+}
+
+\usepackage{setspace}
+\setlength{\parskip}{0.7em}
+
+\begin{document}
+
+\maketitle
+
+\newpage
+\tableofcontents
+\newpage
+\setcounter{section}{0}
+\section{Introduction}
+Aujourd'hui, l'information financière circule à une vitesse inédite. Au-delà des milliers d'articles de presse publiés quotidiennement, 
+les marchés sont désormais soumis à l'influence directe des réseaux sociaux (tels que X, anciennement Twitter, ou Instagram) et des déclarations spontanées de personnalités politiques ou de dirigeants d'entreprises.
+Cette abondance continue d'informations crée des réactions soudaines et massives sur les marchés, exacerbant la volatilité des actifs.
+Pour traiter cette grande quantité de textes, le secteur financier utilise de plus en plus l'intelligence artificielle. 
+L'idée est simple : analyser automatiquement les nouvelles pour voir si elles annoncent des mouvements de marché. 
+Mais en finance, il ne suffit pas qu'un modèle soit performant ; il faut aussi pouvoir comprendre comment il arrive à son résultat. 
+Les institutions hésitent donc à utiliser des modèles trop compliqués ou difficiles à expliquer.
+Notre projet \textbf{Sentivol} s'inscrit dans cette logique. Au lieu de commencer avec des modèles très complexes, nous avons choisi une méthode plus simple et plus transparente, fondée sur des dictionnaires de mots (VADER). Notre objectif est de montrer qu'on peut utiliser l'analyse de texte pour mieux suivre la volatilité boursière tout en gardant un modèle clair, vérifiable et plus facile à justifier.
+
+\section{Analyse du projet dans son contexte}
+
+\subsection{Description du projet}
+Le projet Sentivol est une preuve de concept cherchant à déterminer si l'évaluation de la polarité des textes financiers (positif, neutre, négatif) permet d'anticiper les variations de la volatilité boursière. 
+
+Pour vérifier cette idée, nous relions deux types de données. D'un côté, nous utilisons un historique d'articles financiers provenant de la base \textit{Daily Financial News for 6000+ Stocks}. De l'autre, nous ajoutons les prix de clôture obtenus via Yahoo Finance. À plus long terme, le projet pourrait aussi intégrer les données des réseaux sociaux. L'objectif est de rassembler les principales sources d'information qui peuvent influencer les marchés.
+
+Notre outil d'analyse de texte attribue un score de sentiment à chaque nouvelle. Le principal avantage de cette approche est sa clarté. Si un article reçoit un score négatif, il est possible d'identifier les mots qui ont influencé ce résultat. En comparant ensuite ces scores aux rendements boursiers observés, nous pouvons mesurer si le ton des nouvelles est lié aux réactions du marché.
+
+\subsection{Impact Financier et Organisationnel}
+D'un point de vue stratégique, le déploiement d'une telle solution s'adresse directement aux gestionnaires de portefeuille, aux bureaux de négociation et aux équipes de gestion des risques.
+
+\textbf{Impacts financiers :} 
+L'intégration de Sentivol peut aider les institutions à ajuster plus rapidement leurs positions lorsqu'une mauvaise nouvelle apparaît. Par exemple, si plusieurs publications négatives concernent une entreprise, le gestionnaire peut réduire son exposition avant qu'une forte volatilité ne s'installe. L'intérêt financier est donc de mieux protéger le portefeuille et, dans certains cas, de profiter de réactions excessives du marché.
+
+\textbf{Impacts sur l'organisation :} 
+La transparence du modèle facilite aussi son adoption à l'interne. L'outil n'est pas conçu pour remplacer le jugement humain, mais pour aider les équipes à prendre de meilleures décisions. Cet aspect est important en finance, où les comités de risque demandent souvent des méthodes compréhensibles et faciles à expliquer.
+
+\subsection{Contexte et Perspectives technologiques}
+Le prototype Sentivol repose sur des outils bien établis en science des données, comme Python et les méthodes classiques de traitement de texte. Dans un premier temps, le projet répond surtout à un besoin \textbf{défensif} : mieux réagir à l'arrivée rapide des nouvelles et limiter les effets de mouvements brusques sur les marchés.
+
+\textbf{Perspectives d'amélioration et Grands Modèles de Langage (LLMs) :}
+Même si VADER présente l'avantage d'être simple à expliquer, les progrès récents de l'IA ouvrent la porte à des outils plus puissants. Le défi sera de gagner en précision sans perdre en transparence. 
+
+Les \textit{Large Language Models} (LLMs) pourraient mieux comprendre le contexte d'un texte, par exemple l'ironie ou les nuances d'un message politique. Pour rester compatibles avec les exigences d'explication en finance, deux pistes peuvent être envisagées :
+\begin{enumerate}
+    \item \textbf{La visualisation des mots importants :} certains modèles permettent de voir quels mots ou quelles expressions ont le plus influencé le résultat.
+    \item \textbf{Une explication textuelle du raisonnement :} certains modèles peuvent fournir une justification en langage naturel, étape par étape, ce qui rend leur résultat plus facile à comprendre.
+\end{enumerate}
+
+Ainsi, Sentivol repose aujourd'hui sur une base simple et explicable, tout en laissant la porte ouverte à des améliorations futures avec des modèles plus avancés.
+
+\newpage
+\section{Méthodologie utilisée}
+
+\subsection{Choix de l'approche algorithmique : VADER et Loughran-McDonald}
+Pour analyser le flux continu d'informations, nous avons déployé une approche transparente basée sur l'algorithme VADER (\textit{Valence Aware Dictionary and sEntiment Reasoner}). Toutefois, étant conçu à l'origine pour évaluer des textes généraux (réseaux sociaux), VADER a tendance à mal interpréter le jargon financier (ex: "liability", "risk" sont vus comme neutres ; "record", "beat" sont sous-évalués).
+Pour pallier cela, nous avons spécifiquement enrichi VADER avec le \textbf{lexique financier de Loughran et McDonald (LM)}, reconnu académiquement, et ajouté la détection de phrases contextuelles financières.
+
+\textbf{Avantages et points forts :} 
+L'ajout du vocabulaire LM permet de mieux tenir compte du langage financier tout en gardant un outil simple. Contrairement à des modèles plus lourds, cette approche ne demande pas d'entraînement complexe. Son principal avantage est surtout son \textbf{explicabilité} : si une phrase est jugée très négative, on peut facilement repérer les mots qui expliquent ce résultat.
+
+\textbf{Faiblesses :}
+Même amélioré pour la finance, ce type de modèle reste limité. Il peut avoir du mal avec l'ironie, les phrases longues ou des messages dont le sens dépend fortement du contexte.
+
+\textbf{Justification du choix :} 
+Dans un contexte financier, la transparence est essentielle. Il est donc plus prudent d'utiliser une méthode simple, compréhensible et vérifiable plutôt qu'un modèle très puissant mais difficile à expliquer. L'approche VADER+LM offre un bon équilibre entre pertinence financière, rapidité et facilité d'interprétation.
+
+\subsection{Choix logiciels et outils}
+\textbf{Le choix pour le Prototype :} 
+Nous avons choisi \textbf{Python} comme langage principal, car il est largement utilisé en science des données. Notre prototype repose sur quelques bibliothèques complémentaires : \texttt{vaderSentiment} pour l'analyse de sentiment, \texttt{Polars} pour manipuler un grand volume de données, \texttt{yfinance} pour récupérer les prix boursiers, et \texttt{scikit-learn} pour certains modèles statistiques. Nous avons retenu \texttt{Polars} car il est rapide et bien adapté à des bases de données volumineuses.
+
+\textbf{L'Application en environnement réel :} 
+Pour passer du prototype à une application utilisée en entreprise, il faudrait héberger le code sur une infrastructure infonuagique comme AWS ou Azure. L'outil pourrait alors être relié à des flux de nouvelles en temps réel et envoyer des alertes plus rapidement aux équipes concernées.
+
+\subsection{Flux d'opérations de l'application}
+Le fonctionnement de notre outil suit une suite d'étapes simple, illustrée par le schéma suivant, qui va de la donnée brute jusqu'à la décision humaine.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=2cm,
+    box/.style={rectangle, draw=umontrealblue, rounded corners, fill=umontreallight, text width=3.5cm, align=center, minimum height=1.2cm},
+    arrow/.style={thick, ->, >=stealth, draw=umontrealblue}]
+
+% Row 1
+\node (step1) [box] {\textbf{1. Données utilisées}\\(Textes \& Prix)};
+\node (step2) [box, right of=step1, node distance=4.5cm] {\textbf{2. Bases de données}\\(Stockage local CSV)};
+\node (step3) [box, right of=step2, node distance=4.5cm] {\textbf{3. Traitement initial}\\(Nettoyage \& Alignement date)};
+
+% Row 2 (going backwards for a snake-like path)
+\node (step4) [box, below of=step3, node distance=2.5cm] {\textbf{4. Traitement mathématique}\\(Score VADER+LM \& Rendements)};
+\node (step5) [box, left of=step4, node distance=4.5cm] {\textbf{5. Validation}\\(Vérification des corrélations)};
+\node (step6) [box, left of=step5, node distance=4.5cm] {\textbf{6. Résultats}\\(Conclusion sur la force du signal)};
+
+% Row 3
+\node (step7) [box, below of=step6, node distance=2.5cm] {\textbf{7. Affichage}\\(Graphiques \& Tableau de bord)};
+\node (step8) [box, right of=step7, node distance=4.5cm, fill=umontrealblue, text=white] {\textbf{8. Implication de l'utilisateur}\\(Décision d'investissement finale)};
+
+% Arrows
+\draw [arrow] (step1) -- (step2);
+\draw [arrow] (step2) -- (step3);
+\draw [arrow] (step3) -- (step4);
+\draw [arrow] (step4) -- (step5);
+\draw [arrow] (step5) -- (step6);
+\draw [arrow] (step6) -- (step7);
+\draw [arrow] (step7) -- (step8);
+
+\end{tikzpicture}
+\caption{Schéma du flux d'opérations de Sentivol}
+\end{figure}
+
+Voici le détail de chaque étape du processus :
+\begin{itemize}
+    \item \textbf{1. Données utilisées :} collecte des nouvelles financières et des prix de marché.
+    \item \textbf{2. Bases de données :} stockage des informations dans un format simple à exploiter.
+    \item \textbf{3. Traitement initial :} nettoyage des textes et alignement des dates avec les jours de Bourse.
+    \item \textbf{4. Traitement mathématique :} calcul du score de sentiment et des rendements boursiers.
+    \item \textbf{5. Validation :} vérification que le lien observé entre nouvelles et marché est crédible.
+    \item \textbf{6. Résultats :} synthèse des signaux obtenus.
+    \item \textbf{7. Affichage :} présentation des résultats dans des graphiques et indicateurs faciles à lire.
+    \item \textbf{8. Implication de l'utilisateur :} le gestionnaire utilise l'information comme aide à la décision.
+\end{itemize}
+
+\subsection{Présentation et structuration des données}
+
+Afin de tester notre méthode et de mesurer l'effet des nouvelles sur les marchés, nous avons construit une base de données regroupant à la fois des textes et des variables financières.
+
+\subsubsection{Les données textuelles (Analyse de sentiment financier)}
+Pour représenter le flux des nouvelles boursières, nous avons utilisé le jeu de données \textit{Analyst Ratings \& News} sur Kaggle, qui contient environ 1,4 million de titres d'articles. Ces données ont d'abord été nettoyées et replacées correctement dans le calendrier boursier.
+Nous avons ensuite appliqué notre méthode \textbf{VADER enrichie par le lexique Loughran-McDonald}. Les scores ont été regroupés par titre et par jour afin d'obtenir un indicateur quotidien de sentiment.
+
+\subsubsection{Les données financières (Rendements de marché)}
+En parallèle, nous avons utilisé \textit{Yahoo Finance} (\texttt{yfinance}) pour récupérer les prix des entreprises de notre échantillon entre 2009 et 2020. À partir des prix de clôture, nous avons calculé les \textbf{rendements logarithmiques quotidiens}, définis par $r_{i,t} = \ln(P_{i,t} / P_{i,t-1})$. Cette mesure représente la variation du titre d'un jour à l'autre et sert de variable principale dans notre analyse.
+
+\subsubsection{L'échantillon final de panel et analyse descriptive préliminaire}
+Après la fusion des données par date et par symbole boursier, nous obtenons un \textbf{échantillon de panel} couvrant \textbf{1\,170 entreprises} pour lesquelles nous disposons à la fois de nouvelles et de prix boursiers. En moyenne, chaque entreprise est observée sur \textbf{322 jours}, pour un total de 376\,271~observations journalières. Après agrégation mensuelle et retrait des séries trop courtes, il reste 74\,012~observations-mois pour la modélisation prédictive. Les sections descriptives et de corrélation utilisent donc principalement le panel journalier, tandis que la partie LightGBM repose sur le panel mensuel.
+
+Une première analyse de corrélation de Pearson calculée individuellement pour chaque titre (\textit{within-firm}) livre un résultat préliminaire encourageant, résumé dans le tableau ci-dessous :
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Indicateur} & \textbf{Min} & \textbf{Q1} & \textbf{Médiane} & \textbf{Max} \\
+\midrule
+Corrélation (sentiment cumulé $\sum s$) & $-0.994$ & $+0.110$ & $+0.192$ & $+0.940$ \\
+Corrélation (sentiment moyen $\bar{s}$) & $-0.994$ & $+0.087$ & $+0.146$ & $+0.940$ \\
+\bottomrule
+\end{tabular}
+\caption{Distribution des corrélations intra-titre sentiment--rendement (1\,170 entreprises, 2009--2020).}
+\label{tab:corr_desc}
+\end{table}
+
+Ce premier résultat est encourageant. La corrélation \textbf{globale} est positive : $+0.122$ pour le sentiment cumulé et $+0.092$ pour le sentiment moyen. Lorsque l'on regarde entreprise par entreprise, la relation est encore plus nette : la médiane atteint environ $+0.19$ et \textbf{plus de 92\% des entreprises présentent une corrélation positive}. Cela suggère que le sentiment contenu dans les nouvelles peut apporter une information utile, même si son effet reste modéré.
+
+\subsection{Stratégie empirique et hypothèses}
+\label{sec:strat_emp}
+
+L'objectif central de ce travail est d'évaluer si l'information textuelle --- captée via le score de sentiment financier VADER+LM --- exerce un impact statistiquement significatif sur les rendements boursiers observés. Notre hypothèse principale se formule ainsi :
+
+\begin{itemize}
+    \item \textbf{H\textsubscript{0} (hypothèse nulle) :} Le score de sentiment journalier n'a aucune incidence sur le rendement boursier du titre considéré. Tout lien observé dans l'échantillon est attribuable au hasard.
+    \item \textbf{H\textsubscript{1} (hypothèse alternative) :} Le score de sentiment journalier moyen (ou cumulé) contient une information marginalement prédictive du rendement logarithmique du même actif à la même date.
+\end{itemize}
+
+Nous utilisons une \textbf{régression linéaire sur données de panel}, où chaque observation correspond à un couple \textit{(date, ticker)}. Les variables explicatives sont les indicateurs de sentiment, et la variable à expliquer est le log-rendement $r_{i,t}$ :
+
+$$r_{i,t} = \alpha + \beta_1 \overline{s}_{i,t} + \beta_2 \sum s_{i,t} + \beta_3 \sigma^s_{i,t} + \beta_4 n_{i,t} + \beta_5 \hat{p}^+_{i,t} + \beta_6 \hat{p}^-_{i,t} + \varepsilon_{i,t}$$
+
+où :
+\begin{itemize}
+    \item $\overline{s}_{i,t}$ : score de sentiment moyen de l'actif $i$ à la date $t$ (\texttt{sentiment\_mean})
+    \item $\sum s_{i,t}$ : somme cumulée des scores intra-journaliers (\texttt{sentiment\_sum})
+    \item $\sigma^s_{i,t}$ : écart-type des scores individuels de la journée (\texttt{sentiment\_std})
+    \item $n_{i,t}$ : nombre d'articles couvrant l'actif $i$ à la date $t$ (\texttt{n\_articles})
+    \item $\hat{p}^+_{i,t}$, $\hat{p}^-_{i,t}$ : parts d'articles positifs et négatifs (\texttt{pct\_positif}, \texttt{pct\_negatif})
+\end{itemize}
+
+Ce modèle représente notre point de départ. Nous ajoutons ensuite des variantes plus complètes, par exemple avec des effets fixes par entreprise ou des décalages dans le temps.
+
+\subsection{Découpage chronologique des données (Train / Validation / Test)}
+
+Dans ce type d'exercice, il est important de respecter l'ordre du temps. Un modèle ne doit pas apprendre sur des données futures, sinon les résultats seraient artificiellement trop bons.
+
+Notre échantillon couvre la période 2009--2020, ce qui inclut plusieurs phases de marché. Nous pouvons donc découper les données en trois sous-ensembles \textbf{chronologiques et distincts} :
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Sous-ensemble} & \textbf{Période} & \textbf{Usage} & \textbf{Part approx.}\\
+\midrule
+Entraînement (Train) & 2009 -- 2016 & Ajustement des paramètres du modèle & $\approx 64\%$ ($n=47\,154$) \\
+Validation           & 2017 -- 2018 & Sélection et réglage du meilleur modèle & $\approx 20\%$ ($n=14\,834$) \\
+Test                 & 2019 -- 2020 & Évaluation finale et calcul des rendements & $\approx 16\%$ ($n=12\,024$) \\
+\bottomrule
+\end{tabular}
+\caption{Découpage chronologique strict des données de panel}
+\label{tab:split}
+\end{table}
+
+L'ensemble de \textbf{test} correspond aux données jamais vues par le modèle. Les effectifs du tableau~\ref{tab:split} se rapportent au \textbf{panel mensuel} utilisé pour la modélisation. C'est donc sur cette période seulement que nous jugeons la qualité finale des prévisions.
+
+\subsection{Modèles et critères d'évaluation}
+
+Trois types de modèles sont comparés sur l'ensemble de \textbf{validation}, puis le meilleur est retenu pour l'évaluation finale sur le \textbf{test} :
+
+\begin{enumerate}
+    \item \textbf{Régression MCO :} un modèle linéaire simple qui sert de point de comparaison.
+
+    \item \textbf{Régression à effets fixes :} elle tient compte des différences permanentes entre entreprises.
+
+    \item \textbf{Régression avec décalages :} elle vérifie si le sentiment d'hier ou d'avant-hier aide à prévoir le rendement du lendemain.
+\end{enumerate}
+
+L'évaluation finale sur l'ensemble de \textbf{test} sera menée selon deux axes complémentaires :
+
+\textbf{Axe statistique :}
+\begin{itemize}
+    \item le coefficient $R^2$, qui indique la part de variation expliquée ;
+    \item la RMSE, qui mesure l'erreur de prévision ;
+    \item la significativité des coefficients.
+\end{itemize}
+
+\textbf{Axe économique :}
+\begin{itemize}
+    \item une simulation de stratégie d'investissement basée sur le signal ;
+    \item une comparaison avec un portefeuille simple de référence ;
+    \item une vérification de la valeur ajoutée économique du signal.
+\end{itemize}
+
+\newpage
+\section{Analyse Descriptive du Corpus de Données}
+
+\subsection{Distribution des scores de sentiment VADER+LM}
+
+Sur l'ensemble des 1,4~million d'articles traités, le moteur VADER enrichi du lexique Loughran-McDonald classe \textbf{environ 34\,\% des articles en positif}, 48\,\% en neutre et 17\,\% en négatif (figure~\ref{fig:vader_distrib}). La forte part d'articles neutres est logique, car les nouvelles financières sont souvent rédigées de façon factuelle. On observe aussi qu'une partie des textes se regroupe autour d'un score positif, ce qui correspond à des annonces plus favorables.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{sentiment_vader_lm.png}
+\caption{Distribution des sentiments VADER+LM sur 1,4~million d'articles (gauche~: répartition par classe~; droite~: densité du score continu).}
+\label{fig:vader_distrib}
+\end{figure}
+
+\subsection{Vue d'ensemble des variables clés}
+
+La figure~\ref{fig:desc_dashboard} présente les six variables retenues dans le modèle. Le score de sentiment cumulé ($\sum s$) est surtout concentré autour de zéro, avec une moyenne de $+0.154$, ce qui suggère un ton légèrement positif dans la presse financière. Les rendements journaliers ont, pour leur part, une distribution proche d'une courbe normale, avec tout de même quelques variations extrêmes, ce qui est fréquent sur les marchés financiers.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{descriptive_1_distribution.png}
+\caption{Tableaux de bord descriptif~: distributions du score cumulé, du score moyen, des log-rendements, du nombre d'articles, de la répartition pos/nég et QQ-plot des rendements. Source~: Kaggle + Yahoo Finance.}
+\label{fig:desc_dashboard}
+\end{figure}
+
+\subsection{Évolution temporelle et régimes de marché}
+
+La figure~\ref{fig:timeseries} montre l'évolution mensuelle du sentiment moyen, des rendements moyens et du volume d'articles sur la période 2009--2020. Deux événements ressortent clairement :\begin{itemize}
+\item \textbf{Fin 2018 et début 2019~:} le sentiment bascule brièvement en territoire négatif, coïncidant avec la correction des marchés américains de décembre~2018.
+\item \textbf{Mars--avril 2020~:} choc COVID — le log-rendement mensuel plonge à $-2.2\%$ et le volume d'articles atteint un pic historique de près de 14~000~articles/mois, confirmant que les crises amplifient simultanément le flux informationnel et la réaction des marchés.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{descriptive_2_timeseries.png}
+\caption{Évolution temporelle mensuelle agrégée~: sentiment VADER+LM moyen (haut), log-rendement moyen (centre) et volume d'articles (bas), 2009--2020. Source~: Kaggle + Yahoo Finance.}
+\label{fig:timeseries}
+\end{figure}
+
+La figure~\ref{fig:boxplots_annuels} présente la même information par année. On observe que le sentiment reste globalement positif jusqu'en 2017, puis se détériore davantage en 2019--2020. Les rendements de 2020 sont beaucoup plus dispersés que les autres années, ce qui reflète bien l'instabilité liée à la crise sanitaire.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.94\textwidth]{descriptive_3_boxplot.png}
+\caption{Évolution annuelle~: sentiment moyen (gauche) et log-rendement journalier (droite) par année, 2009--2020. Source~: Kaggle + Yahoo Finance.}
+\label{fig:boxplots_annuels}
+\end{figure}
+
+\subsection{Couverture médiatique et profil sectoriel}
+
+La figure~\ref{fig:coverage} montre que toutes les entreprises ne reçoivent pas la même attention médiatique. Certains titres très suivis, surtout dans la technologie et la finance, concentrent une grande partie des articles. Le classement par sentiment moyen montre aussi que certaines entreprises sont associées à des nouvelles plus positives que d'autres sur l'ensemble de la période.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{descriptive_4_coverage.png}
+\caption{Gauche~: Top~25 tickers par volume d'articles (couleur~: rendement moyen~; vert = positif, rouge = négatif). Droite~: classement par score de sentiment moyen sur toute la période. Source~: Kaggle + Yahoo Finance.}
+\label{fig:coverage}
+\end{figure}
+
+\subsection{Matrice de corrélation entre variables}
+
+La matrice de la figure~\ref{fig:corrmat} met en évidence deux points utiles. D'abord, le score cumulé ($\sum s$) et le score moyen ($\bar{s}$) évoluent de façon proche. Ensuite, la part d'articles négatifs évolue logiquement en sens inverse du sentiment moyen. Enfin, la corrélation directe entre sentiment et rendement reste modérée, ce qui montre que le signal existe, mais qu'il ne suffit pas à lui seul à expliquer tous les mouvements du marché.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.5\textwidth]{descriptive_5_corrmat.png}
+\caption{Matrice de corrélation de Pearson entre toutes les variables du jeu de données fusionné.}
+\label{fig:corrmat}
+\end{figure}
+
+\newpage
+\section{Analyse de la Corrélation Sentiment--Rendement}
+
+\subsection{Distribution des corrélations intra-titre}
+
+Pour chaque titre, nous calculons la corrélation de Pearson entre les scores de sentiment et les rendements journaliers. La figure~\ref{fig:corr_distrib} montre que les deux mesures donnent des résultats semblables : \textbf{un peu plus de 92\,\% des titres présentent une corrélation positive}. La majorité des valeurs se situe donc du côté positif, ce qui va dans le sens de notre hypothèse.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{corr_1_scatter.png}
+\caption{Distribution des corrélations intra-titre sentiment--rendement pour les entreprises retenues dans cette analyse (gauche~: sentiment cumulé, droite~: sentiment moyen).}
+\label{fig:corr_distrib}
+\end{figure}
+
+\subsection{Fiabilité du signal et taille de l'échantillon}
+
+La figure~\ref{fig:corr_fiab} vérifie si le signal devient plus stable lorsque l'on dispose de plus d'observations pour un titre. La tendance générale est légèrement positive : les titres mieux couverts donnent des résultats un peu plus réguliers. Toutefois, la dispersion reste importante, ce qui signifie que la qualité du signal varie aussi selon les entreprises.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.90\textwidth]{corr_2_dist.png}
+\caption{Corrélation intra-titre ($\sum s$ et $\bar{s}$) en fonction du nombre de jours de cotation disponibles. La couleur encode l'intensité de la corrélation~; la droite rouge est la tendance linéaire.}
+\label{fig:corr_fiab}
+\end{figure}
+
+\subsection{Hétérogénéité cross-sectorielle}
+
+La figure~\ref{fig:corr_top25} montre que l'intensité du lien entre sentiment et rendement varie d'un titre à l'autre. Certains titres réagissent fortement aux nouvelles, alors que d'autres beaucoup moins. Dans l'ensemble, plusieurs grandes entreprises et ETF se situent dans une zone de corrélation positive, ce qui soutient l'intérêt du signal pour un portefeuille diversifié.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{corr_3_time.png}
+\caption{Top~25 tickers à corrélation $\sum s$ la plus forte (gauche) et Bottom~25 (droite).}
+\label{fig:corr_top25}
+\end{figure}
+
+\subsection{Concordance des deux mesures de corrélation}
+
+La figure~\ref{fig:corr_concordance} montre que les deux mesures de sentiment donnent presque les mêmes conclusions pour la plupart des titres. Les écarts apparaissent surtout quand le nombre d'articles est faible. Cela renforce la cohérence générale des résultats.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.55\textwidth]{corr_4_ticker.png}
+\caption{Concordance des corrélations intra-titre selon les deux mesures de sentiment (taille des points $\propto$ nombre d'observations).}
+\label{fig:corr_concordance}
+\end{figure}
+
+\newpage
+\section{Résultats de la Modélisation par LightGBM + Optuna}
+
+\subsection{Optimisation bayésienne des hyperparamètres (Optuna)}
+
+Le réglage des paramètres du modèle influence directement sa qualité. Pour automatiser cette étape, nous utilisons \textbf{Optuna}, qui teste plusieurs combinaisons et retient celles qui donnent les meilleurs résultats. Nous avons réalisé $50$ essais par modèle.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+\textbf{Hyperparamètre} & \textbf{Espace} & \textbf{Meilleur (Clf)} & \textbf{Meilleur (Reg)} \\
+\midrule
+\texttt{n\_estimators}      & $[100,\,600]$ (step 50) & 250 & 350 \\
+\texttt{learning\_rate}     & $[0.01,\,0.15]$ (log)  & 0.0273 & 0.1376 \\
+\texttt{num\_leaves}        & $[15,\,63]$             & 49 & 57 \\
+\texttt{max\_depth}         & $[3,\,8]$               & 8 & 5 \\
+\texttt{min\_child\_samples}& $[20,\,100]$            & 79 & 47 \\
+\texttt{subsample}          & $[0.6,\,1.0]$           & 0.725 & 0.702 \\
+\texttt{colsample\_bytree}  & $[0.6,\,1.0]$           & 0.965 & 0.626 \\
+\texttt{reg\_alpha / \_lambda} & $[10^{-4},\,1]$ (log) & 0.059 / 0.003 & 0.006 / 0.0003 \\
+\bottomrule
+\end{tabular}
+\caption{Espace de recherche Optuna pour le LightGBM Classifier (Clf) et Regressor (Reg). Résultats obtenus après 50 essais TPE par modèle.}
+\label{tab:optuna_space}
+\end{table}
+
+Le classifieur est évalué avec le score F1 et le régresseur avec la RMSE sur l'échantillon de validation. Nous utilisons aussi un arrêt précoce afin d'éviter que le modèle ne s'ajuste trop aux données d'entraînement.
+
+\textbf{Normalisation des features.} Les deux modèles utilisent des normalisateurs distincts, adaptés à chaque tâche :
+\begin{itemize}
+    \item \textbf{Classifieur} : \texttt{StandardScaler}.
+    \item \textbf{Régresseur} : \texttt{RobustScaler}, mieux adapté aux valeurs extrêmes.
+\end{itemize}
+
+\textbf{Sous-ensemble d'entraînement du régresseur.} Le régresseur sert surtout à classer les titres selon leur potentiel. Pour cette raison, il est entraîné seulement sur les mois rentables, c'est-à-dire ceux où le rendement futur est positif. Cela permet de concentrer l'apprentissage sur les titres susceptibles d'entrer dans le portefeuille.
+
+\subsection{Classification de la rentabilité mensuelle}
+
+Le \textbf{LightGBM Classifier} est entraîné à prédire si le rendement mensuel d'un titre sera positif ($y = 1$) ou négatif ($y = 0$) à partir des 14 variables retenues. Le tableau~\ref{tab:clf_metrics} résume les résultats sur les trois périodes.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Période} & \textbf{F1} & \textbf{Précision} & \textbf{Rappel} \\
+\midrule
+Train      & 0.62 & 0.57 & 0.68 \\
+Validation & 0.59 & 0.54 & 0.65 \\
+Test       & 0.63 & 0.56 & 0.71 \\
+\bottomrule
+\end{tabular}
+\caption{Métriques de classification (LightGBM Classifier, hyperparamètres Optuna). La cible est la rentabilité mensuelle $M+1$. Train~: 2009--2016 ($n=47\,154$)~; Validation~: 2017--2018 ($n=14\,834$)~; Test~: 2019--2020 ($n=12\,024$).}
+\label{tab:clf_metrics}
+\end{table}
+
+La figure~\ref{fig:clf_metrics} présente les scores F1/Précision/Rappel et les matrices de confusion sur les trois périodes.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{classification_metrics.png}
+\caption{Gauche~: F1, Précision et Rappel par période (train/validation/test). Droite~: matrices de confusion sur chacune des trois périodes. Modèle~: LightGBM Classifier (Optuna).}
+\label{fig:clf_metrics}
+\end{figure}
+
+\subsection{Régression et portefeuille Top-50}
+
+Le \textbf{LightGBM Regressor} prédit ensuite le log-rendement futur $r_{i,M+1}$. Le portefeuille Top-50 est construit chaque mois selon la procédure suivante :
+
+\begin{enumerate}
+    \item Pour chaque titre $i$ à chaque période $t$, on calcule :
+    \begin{itemize}
+        \item $\hat{p}_{i,t}$ = probabilité $\Pr(r_{i,M+1} > 0)$ estimée par le classifieur
+        \item $\hat{r}_{i,t}$ = log-rendement futur prédit par le régresseur
+    \end{itemize}
+    \item On forme le \textbf{score composite} $s_{i,t} = \hat{p}_{i,t} \times \hat{r}_{i,t}$, qui combine la probabilité d'une hausse et le rendement prévu.
+    \item Les $50$~titres avec le \textbf{score $s_{i,t}$ le plus élevé} par période sont sélectionnés et équipondérés (sans filtre binaire séparé).
+\end{enumerate}
+
+Ce score permet d'utiliser l'information des deux modèles en même temps. Ainsi, un titre avec une forte probabilité de hausse mais un gain attendu modéré n'est pas évalué de la même façon qu'un titre plus risqué mais avec un rendement prévu plus élevé.
+
+\textbf{Métriques du régresseur.} La meilleure RMSE de validation obtenue par Optuna est de $0.0616$. Sur l'échantillon de validation positif utilisé pour le réglage du modèle, le régresseur atteint RMSE~$= 0.0616$, MAE~$= 0.0345$, $R^2 = 0.114$. Sur le jeu test complet, les résultats se détériorent (RMSE~$= 0.1538$, MAE~$= 0.0907$, $R^2 = -0.116$), ce qui s'explique en grande partie par le choc COVID-19 de 2020 et par les mouvements extrêmes observés pendant cette période.
+
+\textbf{Performance du portefeuille Top-50 sur la période de test (2019--2020).}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Métrique} & \textbf{Portefeuille Top-50} & \textbf{Benchmark} \\
+\midrule
+Rendement annualisé & $+21.90\%$ & $+1.09\%$ \\
+Ratio de Sharpe     & 0.734      & N/A \\
+IC (Pearson, score vs $r_{M+1}$) & 0.167 & N/A \\
+Rendement excédentaire mensuel moyen & $+1.73\%$ & N/A \\
+\bottomrule
+\end{tabular}
+\caption{Performance du portefeuille Top-50 (score composite $\hat{p}\times\hat{r}$) sur la période de test 2019--2020. Benchmark~: portefeuille équipondéré de l'univers.}
+\label{tab:portfolio_perf}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{portfolio_performance.png}
+\caption{Gauche~: rendements cumulés du portefeuille Top-50 vs benchmark (2019–2020). Droite~: rendements mensuels en pourcentage.}
+\label{fig:portfolio}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{feature_importance.png}
+\caption{Feature Importance (gain moyen, LightGBM) pour le régresseur (gauche) et le classifieur (droite). Les features en vert sont issues du sentiment VADER/LM~; les features en bleu sont financières (rendements/volatilité retardés).}
+\label{fig:feature_imp}
+\end{figure}
+
+\section{Tests Statistiques et Validation des Hypothèses (\ref{sec:strat_emp})}
+
+\subsection{Stratégie de validation}
+
+Pour vérifier nos hypothèses, nous utilisons quatre tests complémentaires. L'idée est de voir si le signal de sentiment aide réellement à prévoir les rendements et si le portefeuille construit à partir de ce signal apporte une valeur ajoutée.
+
+\subsection{Test 1 -- \textit{t}-test sur l'alpha mensuel}
+
+Soit $\{\alpha_t\}_{t=1}^{T}$ la série des rendements excédentaires mensuels du portefeuille Top-50 par rapport au benchmark équipondéré. Nous testons~:
+\[
+  H_0 : \mathbb{E}[\alpha_t] = 0 \quad \text{vs} \quad H_1 : \mathbb{E}[\alpha_t] > 0 \quad \text{(test unilatéral)}
+\]
+Les résultats sont reportés dans le tableau~\ref{tab:hyp_tests}.
+
+\subsection{Test 2 -- Corrélation de Pearson (sentiment vs rendement mensuel)}
+
+Nous testons ensuite la corrélation de Pearson entre les deux mesures agrégées de sentiment et le rendement futur $M+1$ sur l'ensemble du panel mensuel ($n = 74\,012$ observations-mois) :
+\begin{align}
+    H_0 : r(\text{sent\_sum\_mean},\; r_{M+1}) = 0 \quad &\text{vs} \quad H_1 : r \neq 0 \\
+    H_0 : r(\text{sent\_mean\_avg},\; r_{M+1}) = 0 \quad &\text{vs} \quad H_1 : r \neq 0
+\end{align}
+
+\subsection{Résultats agrégés}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Test} & \textbf{Statistique} & \textbf{p-valeur} & \textbf{Significatif ($\alpha=5\%$)} \\
+\midrule
+$t$-test alpha $> 0$           & $t = 1.82$   & $0.044$ & Oui \\
+Pearson \texttt{sent\_sum\_mean} & $r = 0.005$   & $0.164$ & Non \\
+Pearson \texttt{sent\_mean\_avg} & $r = 0.012$   & $<0.001$ & Oui \\
+\bottomrule
+\end{tabular}
+\caption{Tableau récapitulatif des tests statistiques. Niveau $\alpha = 5\,\%$.}
+\label{tab:hyp_tests}
+\end{table}
+
+\section{Conclusion}
+
+Dans l'ensemble, les résultats obtenus montrent que le sentiment extrait des nouvelles financières contient une information utile pour anticiper la \textbf{direction} du marché, même s'il explique moins bien l'ampleur exacte des rendements. Cette lecture est cohérente avec la figure~\ref{fig:feature_imp}, dans laquelle \texttt{sent\_lag1} ressort comme la variable la plus importante du classifieur. Autrement dit, le sentiment observé à la période précédente semble jouer un rôle réel dans la prévision du signe du rendement futur. Ce constat est aussi compatible avec le score F1 de $0.63$ sur l'échantillon test et avec la performance du portefeuille Top-50, qui surperforme le benchmark sur la période étudiée.
+
+Il faut toutefois rester prudent dans l'interprétation. Une première limite importante vient du fait que notre source textuelle repose principalement sur le \textbf{titre des articles} et non sur leur contenu complet. Un titre résume souvent l'information essentielle, mais il ne contient pas toujours toutes les nuances nécessaires pour bien comprendre la portée réelle d'une annonce. Une deuxième limite est que l'information textuelle, à elle seule, ne suffit pas à représenter tout le contexte des marchés financiers. Les rendements dépendent aussi d'autres facteurs comme la conjoncture macroéconomique, les taux d'intérêt, la liquidité, les rotations sectorielles ou les chocs géopolitiques. Il est donc logique que le signal de sentiment soit utile sans pouvoir expliquer à lui seul l'ensemble des mouvements du marché.
+
+Malgré ces limites, les résultats montrent un \textbf{potentiel réel d'exploitation des données textuelles} dans une logique financière. Les nouvelles ne constituent pas seulement un bruit d'information ; elles peuvent être transformées en variables quantitatives utiles pour la prévision et pour la sélection de portefeuille. Dans cette perspective, Sentivol représente une preuve de concept crédible. Le modèle ne doit pas être interprété comme un système autonome de trading, mais plutôt comme un outil d'aide à la décision capable de compléter les approches plus traditionnelles.
+
+Sur le plan méthodologique, plusieurs pistes d'amélioration apparaissent clairement. D'abord, l'analyse du \textbf{contenu complet des articles} permettrait probablement de mieux capter le contexte économique et la nuance des nouvelles. Ensuite, l'utilisation de \textbf{Large Language Models} pourrait améliorer la compréhension du ton implicite, de l'ironie, des relations entre événements et des formulations plus complexes. Ces modèles seraient particulièrement intéressants pour distinguer une information neutre d'une annonce réellement importante pour les investisseurs. Il serait également pertinent de combiner le signal textuel avec d'autres variables financières, par exemple le momentum, la volatilité passée, le volume de transactions ou des indicateurs macroéconomiques.
+
+Enfin, les résultats sur la période de test rappellent qu'un modèle peut perdre en précision lorsqu'il est confronté à une rupture brutale de régime, comme la crise de la COVID-19. Le fait que le régresseur se détériore sur cette période confirme qu'une application réelle devrait inclure des mises à jour régulières, des tests sur plusieurs régimes de marché et une surveillance continue des performances. Cela renforce l'idée que ce type d'outil doit être utilisé avec prudence et comme complément d'analyse.
+
+En conclusion, notre travail suggère que l'analyse de sentiment appliquée aux nouvelles financières peut réellement contribuer à prévoir la direction des marchés et à améliorer une stratégie de sélection de titres. Les résultats restent modestes, mais ils sont suffisamment encourageants pour justifier une poursuite du projet. Dans une version future de Sentivol, l'intégration de textes plus riches, de variables financières complémentaires et de modèles de langage plus avancés pourrait améliorer de façon importante la qualité des signaux produits.
+
+\end{document}

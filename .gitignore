@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# Data — raw and processed data files (large / sensitive)
+data/raw/
+data/processed/
+
+# Model weights (GGUF, safetensors, bin)
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# LaTeX build artefacts
+rapports/*.aux
+rapports/*.fdb_latexmk
+rapports/*.fls
+rapports/*.log
+rapports/*.toc
+rapports/*.out
+rapports/*.synctex.gz
+rapports/*.bbl
+rapports/*.blg
+
+# Figures generated at runtime
+figures/
+
+# IDE & OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Secrets / environment
+.env
+*.env
+secrets.json
+
+# Large PDF source
+Travail_Session_H2025.pdf
