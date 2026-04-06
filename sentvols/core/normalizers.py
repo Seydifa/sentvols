@@ -462,10 +462,14 @@ class TransformersBackend:
         model: str = "google/flan-t5-base",
         device: str = "cpu",
         max_new_tokens: int = 256,
+        torch_dtype=None,
+        device_map: str | None = None,
     ) -> None:
         self._model = model
         self._device = device
         self._max_new_tokens = max_new_tokens
+        self._torch_dtype = torch_dtype
+        self._device_map = device_map
         self._pipe = None  # lazy-loaded on first call
 
     @property
@@ -482,6 +486,8 @@ class TransformersBackend:
         Uses the Auto classes directly rather than ``transformers.pipeline``
         so the code works across transformers versions (≥4.x including 4.50+
         which dropped ``text2text-generation`` from the pipeline registry).
+        Supports ``torch_dtype`` (e.g. ``torch.bfloat16``) and
+        ``device_map="auto"`` for large models that span multiple devices.
         Returns ``(text, None)`` — no reasoning trace for local models.
         """
         if self._pipe is None:
@@ -489,18 +495,25 @@ class TransformersBackend:
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
             tok = AutoTokenizer.from_pretrained(self._model)
-            mdl = AutoModelForSeq2SeqLM.from_pretrained(self._model)
-            device_obj = torch.device(self._device)
-            mdl = mdl.to(device_obj)
+            _load_kwargs: dict = {}
+            if self._torch_dtype is not None:
+                _load_kwargs["torch_dtype"] = self._torch_dtype
+            if self._device_map is not None:
+                _load_kwargs["device_map"] = self._device_map
+                mdl = AutoModelForSeq2SeqLM.from_pretrained(self._model, **_load_kwargs)
+            else:
+                mdl = AutoModelForSeq2SeqLM.from_pretrained(self._model, **_load_kwargs)
+                device_obj = torch.device(self._device)
+                mdl = mdl.to(device_obj)
             mdl.eval()
-            # Store as a callable that mirrors the old pipeline interface
-            self._pipe = (tok, mdl, device_obj)
+            self._pipe = (tok, mdl)
 
-        tok, mdl, device_obj = self._pipe
+        tok, mdl = self._pipe
         import torch
 
+        _input_device = next(mdl.parameters()).device
         inputs = tok(prompt, return_tensors="pt", truncation=True, max_length=512).to(
-            device_obj
+            _input_device
         )
         with torch.no_grad():
             out_ids = mdl.generate(**inputs, max_new_tokens=self._max_new_tokens)
