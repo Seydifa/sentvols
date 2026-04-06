@@ -206,6 +206,9 @@ CONTEXT_PHRASES: dict[str, float] = {
     "credit upgrade": +2.0,
     "cash flow positive": +2.5,
     "debt restructuring": -1.5,
+    "file for bankruptcy": -3.0,
+    "filed for bankruptcy": -3.0,
+    "files for bankruptcy": -3.0,
     "ipo": +1.0,
     "initial public offering": +1.0,
 }
@@ -942,8 +945,7 @@ class Annotator:
                 )
             else:
                 raise ValueError(
-                    f"Unknown backend string {backend!r}. "
-                    "Expected 'vader' or 'llm'."
+                    f"Unknown backend string {backend!r}. Expected 'vader' or 'llm'."
                 )
         elif isinstance(backend, (FinancialVADERAnnotator, FinancialLLMAnnotator)):
             self._ann = backend
@@ -1094,8 +1096,4 @@ class Annotator:
 
     def __repr__(self) -> str:
         norm_repr = repr(self._norm) if self._norm else "None"
-        return (
-            f"Annotator("
-            f"backend={self._ann!r}, "
-            f"normalizer={norm_repr})"
-        )
+        return f"Annotator(backend={self._ann!r}, normalizer={norm_repr})"
