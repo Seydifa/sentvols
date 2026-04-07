@@ -376,9 +376,12 @@ def build_full_feature_set(
     # compute abnormal returns
     returns_ab = add_abnormal_returns(returns_with_mkt, beta_df, col_ticker=col_ticker)
 
-    # join everything
+    # join everything (include close_price when present for downstream use)
+    _extra = [c for c in ["close_price"] if c in returns_ab.columns]
     return feat.join(
-        returns_ab.select([col_ticker, col_period, "ret", col_mkt, "abnormal_ret"]),
+        returns_ab.select(
+            [col_ticker, col_period, "ret", col_mkt, "abnormal_ret"] + _extra
+        ),
         on=[col_ticker, col_period],
         how="left",
     )

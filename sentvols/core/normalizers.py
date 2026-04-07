@@ -35,12 +35,81 @@ Design principles
 
 from __future__ import annotations
 
+import contextlib
+import io
+import logging
+import os
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from .exports import registration
+
+# ---------------------------------------------------------------------------
+# Silence context manager — suppresses noisy ML-library inference output
+# ---------------------------------------------------------------------------
+
+_NOISY_LOGGERS = (
+    "vllm",
+    "vllm.engine",
+    "vllm.worker",
+    "vllm.executor",
+    "ray",
+    "ray.tune",
+    "ray.util",
+    "transformers",
+    "transformers.tokenization_utils_base",
+    "huggingface_hub",
+    "huggingface_hub.utils",
+    "tokenizers",
+    "filelock",
+    "urllib3",
+    "httpx",
+    "torch",
+    "llama_cpp",
+)
+
+
+@contextlib.contextmanager
+def _silence_inference():
+    """Context manager: suppress INFO/WARNING output from ML inference libs.
+
+    Strategy:
+    * Raises all loud loggers to ERROR for the duration of the block.
+    * Sets ``VLLM_LOGGING_LEVEL=ERROR`` so that vLLM's C-level logger is
+      also silenced before the engine spawns its own logger hierarchy.
+    * Redirects *stderr* to /dev/null to catch llama.cpp and other libs
+      that bypass Python logging and print directly to the file descriptor.
+      Critical Python tracebacks are still raised as exceptions; only the
+      file-descriptor output is swallowed.
+    """
+    saved_levels = {}
+    for name in _NOISY_LOGGERS:
+        lgr = logging.getLogger(name)
+        saved_levels[name] = lgr.level
+        lgr.setLevel(logging.ERROR)
+
+    prev_vllm = os.environ.get("VLLM_LOGGING_LEVEL")
+    os.environ["VLLM_LOGGING_LEVEL"] = "ERROR"
+
+    # Redirect the real stderr fd so C-extension output is also silenced
+    _devnull_fd = open(os.devnull, "w")
+    _old_stderr = sys.stderr
+    sys.stderr = _devnull_fd
+    try:
+        yield
+    finally:
+        sys.stderr = _old_stderr
+        _devnull_fd.close()
+        for name, level in saved_levels.items():
+            logging.getLogger(name).setLevel(level)
+        if prev_vllm is None:
+            os.environ.pop("VLLM_LOGGING_LEVEL", None)
+        else:
+            os.environ["VLLM_LOGGING_LEVEL"] = prev_vllm
+
 
 # ---------------------------------------------------------------------------
 # Prompt templates
@@ -492,34 +561,37 @@ class TransformersBackend:
         ``device_map="auto"`` for large models that span multiple devices.
         Returns ``(text, None)`` — no reasoning trace for local models.
         """
-        if self._pipe is None:
+        with _silence_inference():
+            if self._pipe is None:
+                import torch
+                from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+                import transformers as _transformers
+                _transformers.logging.set_verbosity_error()
+
+                tok = AutoTokenizer.from_pretrained(self._model)
+                _load_kwargs: dict = {}
+                if self._torch_dtype is not None:
+                    _load_kwargs["torch_dtype"] = self._torch_dtype
+                if self._device_map is not None:
+                    _load_kwargs["device_map"] = self._device_map
+                    mdl = AutoModelForSeq2SeqLM.from_pretrained(self._model, **_load_kwargs)
+                else:
+                    mdl = AutoModelForSeq2SeqLM.from_pretrained(self._model, **_load_kwargs)
+                    device_obj = torch.device(self._device)
+                    mdl = mdl.to(device_obj)
+                mdl.eval()
+                self._pipe = (tok, mdl)
+
+            tok, mdl = self._pipe
             import torch
-            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-            tok = AutoTokenizer.from_pretrained(self._model)
-            _load_kwargs: dict = {}
-            if self._torch_dtype is not None:
-                _load_kwargs["torch_dtype"] = self._torch_dtype
-            if self._device_map is not None:
-                _load_kwargs["device_map"] = self._device_map
-                mdl = AutoModelForSeq2SeqLM.from_pretrained(self._model, **_load_kwargs)
-            else:
-                mdl = AutoModelForSeq2SeqLM.from_pretrained(self._model, **_load_kwargs)
-                device_obj = torch.device(self._device)
-                mdl = mdl.to(device_obj)
-            mdl.eval()
-            self._pipe = (tok, mdl)
-
-        tok, mdl = self._pipe
-        import torch
-
-        _input_device = next(mdl.parameters()).device
-        inputs = tok(prompt, return_tensors="pt", truncation=True, max_length=512).to(
-            _input_device
-        )
-        with torch.no_grad():
-            out_ids = mdl.generate(**inputs, max_new_tokens=self._max_new_tokens)
-        return tok.decode(out_ids[0], skip_special_tokens=True).strip(), None
+            _input_device = next(mdl.parameters()).device
+            inputs = tok(prompt, return_tensors="pt", truncation=True, max_length=512).to(
+                _input_device
+            )
+            with torch.no_grad():
+                out_ids = mdl.generate(**inputs, max_new_tokens=self._max_new_tokens)
+            return tok.decode(out_ids[0], skip_special_tokens=True).strip(), None
 
     def batch_call(self, prompts: list[str]) -> list[tuple[str, None]]:
         """Tokenize and generate for all *prompts* in a single padded GPU call.
@@ -530,33 +602,34 @@ class TransformersBackend:
         """
         if not prompts:
             return []
-        # Ensure pipeline is initialised (reuses call() lazy-init path)
-        if self._pipe is None:
-            self.call(prompts[0])
-        tok, mdl = self._pipe
-        import torch
+        with _silence_inference():
+            # Ensure pipeline is initialised (reuses call() lazy-init path)
+            if self._pipe is None:
+                self.call(prompts[0])  # already silent inside call()
+            tok, mdl = self._pipe
+            import torch
 
-        # Left-padding makes the model read the end of each prompt correctly
-        orig_side = tok.padding_side
-        tok.padding_side = "left"
-        if tok.pad_token_id is None:
-            tok.pad_token_id = tok.eos_token_id
-        try:
-            _input_device = next(mdl.parameters()).device
-            inputs = tok(
-                list(prompts),
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=512,
-            ).to(_input_device)
-            with torch.no_grad():
-                out_ids = mdl.generate(**inputs, max_new_tokens=self._max_new_tokens)
-        finally:
-            tok.padding_side = orig_side
-        return [
-            (tok.decode(ids, skip_special_tokens=True).strip(), None) for ids in out_ids
-        ]
+            # Left-padding makes the model read the end of each prompt correctly
+            orig_side = tok.padding_side
+            tok.padding_side = "left"
+            if tok.pad_token_id is None:
+                tok.pad_token_id = tok.eos_token_id
+            try:
+                _input_device = next(mdl.parameters()).device
+                inputs = tok(
+                    list(prompts),
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                ).to(_input_device)
+                with torch.no_grad():
+                    out_ids = mdl.generate(**inputs, max_new_tokens=self._max_new_tokens)
+            finally:
+                tok.padding_side = orig_side
+            return [
+                (tok.decode(ids, skip_special_tokens=True).strip(), None) for ids in out_ids
+            ]
 
     def __repr__(self) -> str:
         return f"TransformersBackend(model={self._model!r}, device={self._device!r})"
@@ -730,29 +803,30 @@ class LlamaCppBackend:
         for subsequent calls, so the expensive model load happens only once.
         Returns ``(text, None)`` — no reasoning trace.
         """
-        if self._llm is None:
-            try:
-                from llama_cpp import Llama
-            except ImportError as exc:
-                raise ImportError(
-                    "The 'llama-cpp-python' package is required for LlamaCppBackend.  "
-                    "Install it with:  pip install llama-cpp-python"
-                ) from exc
+        with _silence_inference():
+            if self._llm is None:
+                try:
+                    from llama_cpp import Llama
+                except ImportError as exc:
+                    raise ImportError(
+                        "The 'llama-cpp-python' package is required for LlamaCppBackend.  "
+                        "Install it with:  pip install llama-cpp-python"
+                    ) from exc
 
-            self._llm = Llama(
-                model_path=self._model_path,
-                n_ctx=self._n_ctx,
-                n_threads=self._n_threads,
-                n_gpu_layers=self._n_gpu_layers,
-                verbose=False,
+                self._llm = Llama(
+                    model_path=self._model_path,
+                    n_ctx=self._n_ctx,
+                    n_threads=self._n_threads,
+                    n_gpu_layers=self._n_gpu_layers,
+                    verbose=False,
+                )
+
+            resp = self._llm.create_chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=self._max_tokens,
+                temperature=0.0,
             )
-
-        resp = self._llm.create_chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=self._max_tokens,
-            temperature=0.0,
-        )
-        return resp["choices"][0]["message"]["content"].strip(), None
+            return resp["choices"][0]["message"]["content"].strip(), None
 
     def __repr__(self) -> str:
         import os
@@ -858,23 +932,26 @@ class VLLMBackend:
                 "Install it with:  pip install vllm"
             ) from exc
 
-        self._engine = LLM(
-            model=self._model,
-            gpu_memory_utilization=self._gpu_memory_utilization,
-            dtype=self._dtype,
-            trust_remote_code=self._trust_remote_code,
-            enforce_eager=True,  # disable CUDA graph capture → faster first call
-        )
-        self._sampling_params = SamplingParams(
-            max_tokens=self._max_new_tokens,
-            temperature=self._temperature,
-        )
-        if self._use_chat_template:
-            from transformers import AutoTokenizer
-
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                self._model, trust_remote_code=self._trust_remote_code
+        with _silence_inference():
+            self._engine = LLM(
+                model=self._model,
+                gpu_memory_utilization=self._gpu_memory_utilization,
+                dtype=self._dtype,
+                trust_remote_code=self._trust_remote_code,
+                enforce_eager=True,  # disable CUDA graph capture → faster first call
             )
+            self._sampling_params = SamplingParams(
+                max_tokens=self._max_new_tokens,
+                temperature=self._temperature,
+            )
+            if self._use_chat_template:
+                import transformers as _transformers
+                _transformers.logging.set_verbosity_error()
+                from transformers import AutoTokenizer
+
+                self._tokenizer = AutoTokenizer.from_pretrained(
+                    self._model, trust_remote_code=self._trust_remote_code
+                )
 
     # ------------------------------------------------------------------
     # Prompt formatting (chat template)
@@ -906,7 +983,8 @@ class VLLMBackend:
     def call(self, prompt: str) -> tuple[str, None]:
         """Single-sample inference.  Returns ``(score_text, None)``."""
         self._ensure_engine()
-        outputs = self._engine.generate([self._format(prompt)], self._sampling_params)
+        with _silence_inference():
+            outputs = self._engine.generate([self._format(prompt)], self._sampling_params)
         return outputs[0].outputs[0].text.strip(), None
 
     def batch_call(self, prompts: list[str]) -> list[tuple[str, None]]:
@@ -927,7 +1005,8 @@ class VLLMBackend:
         """
         self._ensure_engine()
         formatted = [self._format(p) for p in prompts]
-        outputs = self._engine.generate(formatted, self._sampling_params)
+        with _silence_inference():
+            outputs = self._engine.generate(formatted, self._sampling_params)
         return [(o.outputs[0].text.strip(), None) for o in outputs]
 
     def __repr__(self) -> str:
