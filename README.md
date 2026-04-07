@@ -1,4 +1,4 @@
-# sentvols — Financial Sentiment Analysis Toolkit
+# sentvols — Financial Sentiment & Portfolio Toolkit
 
 > **ECN 6578A — Projet de session, Fintech**  
 > Analyse de sentiment sur les nouvelles financières pour alimenter un discriminateur de texte et des modèles de volatilité implicite.
@@ -7,8 +7,8 @@
 
 ## Overview
 
-**sentvols** is a modular Python library for financial-news sentiment analysis.  
-It combines rule-based and LLM-based annotation into a single, pluggable pipeline — from raw headlines to signed sentiment scores ready for downstream ML models (volatility prediction, factor models, portfolio signal generation).
+**sentvols** is a modular Python library for financial-news sentiment analysis and factor-based portfolio management.  
+It combines rule-based and LLM-based annotation, framework-agnostic ML wrappers, and a stateful portfolio layer — from raw headlines to live trading signals.
 
 ```
 Raw headline
@@ -21,23 +21,22 @@ FinancialVADERAnnotator              ← VADER + Loughran-McDonald + phrase tabl
     │                                   + phrase negation guard + positional decay
     ▼
 score ∈ [−1, 1]   label ∈ {positif, neutre, négatif}
-```
-
-Or with the façade:
-
-```python
-from sentvols.utils import Annotator
-
-ann = Annotator()                             # zero-dependency default
-ann.score("Company beats earnings estimates") # → +0.67
-
-ann = Annotator(normalizer="llama_cpp", model_path="/tmp/model.gguf")
-ann.score("Oh great, another record quarter — record losses, that is.")  # → −0.36
+    │
+    ▼
+SentvolsClassifier / SentvolsRegressor   ← any sklearn-compatible estimator + Optuna HPO
+    │
+    ▼
+PortfolioBuilder                     ← top-n selection + pluggable weighting
+    │
+    ▼
+PortfolioManager                     ← stateful buy/sell tracker per period
 ```
 
 ---
 
 ## Features
+
+### Sentiment annotation
 
 | Feature | Description |
 |---|---|
@@ -53,6 +52,28 @@ ann.score("Oh great, another record quarter — record losses, that is.")  # →
 | **Explainability** | `explain()`, `explain_to_dataframe()` — per-token and per-phrase contribution breakdown |
 | **DataFrame integration** | `annotate_news(df, annotator, normalizer=)` — scores a news DataFrame with optional LLM normalisation |
 
+### ML models (`sentvols.models`)
+
+| Feature | Description |
+|---|---|
+| **Framework-agnostic wrappers** | `SentvolsClassifier` / `SentvolsRegressor` accept any sklearn-compatible estimator (scikit-learn, CatBoost, XGBoost, …) |
+| **Optuna HPO** | `optimize()` with user-supplied `search_space: Callable` — fully decoupled from any estimator framework |
+| **Production serialisation** | `save(path)` / `load(path)` via joblib |
+| **Feature importances** | `.feature_importances_` property — handles `feature_importances_` or `coef_` fallback automatically |
+
+### Portfolio management (`sentvols.portfolio`)
+
+| Feature | Description |
+|---|---|
+| **`PortfolioBuilder`** | Top-n selection per period using polars window functions; usable with trained models *or* precomputed scores |
+| **4 built-in weighting strategies** | `"equal"` (uniform), `"score"` (min-max), `"softmax"` (exponential tilt), `"rank"` (1/rank) |
+| **Custom weighting** | Pass any `fn(scores: ndarray) → weights: ndarray` callable |
+| **Weighted performance** | `performance()` uses weighted returns when `weight` column is present |
+| **Sub-daily frequencies** | `freq` accepts int or named alias: `"hourly"`, `"5min"`, `"1min"`, … |
+| **`PortfolioManager`** | Stateful buy/sell tracker: rebalances to target weights, tracks cash and positions, applies transaction costs |
+| **Period-aware prices** | `rebalance()` accepts `dict` or polars/pandas DataFrame; period-specific prices resolved automatically |
+| **Persistence** | `save(path)` / `load(path)` — full state (cash, positions, history) serialised via joblib |
+
 ---
 
 ## Project structure
@@ -62,7 +83,8 @@ sentvols/
 ├── core/
 │   ├── annotators.py      # FinancialVADERAnnotator, FinancialLLMAnnotator, Annotator
 │   ├── normalizers.py     # FinancialTextNormalizer + 6 LLM backends
-│   ├── models.py          # Downstream ML models (LightGBM discriminator, …)
+│   ├── models.py          # SentvolsClassifier, SentvolsRegressor (framework-agnostic)
+│   ├── portfolio.py       # PortfolioBuilder, PortfolioManager
 │   ├── plots.py           # Sentiment waterfall, distribution, time-series charts
 │   ├── explainers.py      # SHAP-based explanations for ML models
 │   ├── utils.py           # annotate_news(), DataFrame helpers
@@ -71,16 +93,17 @@ sentvols/
 ├── explainers/            # Public namespace (sentvols.explainers.*)
 ├── models/                # Public namespace (sentvols.models.*)
 ├── plots/                 # Public namespace (sentvols.plots.*)
+├── portfolio/             # Public namespace (sentvols.portfolio.*)
 └── internals/
     └── Loughran-McDonald_MasterDictionary_1993-2025.csv
 
 tests/
 ├── test_annotators.py     # 118 tests
 ├── test_normalizers.py    # 42 tests
-├── test_models.py
+├── test_models.py         # 66 tests (models + portfolio)
 ├── test_plots.py
 ├── test_explainers.py
-└── test_utils.py
+└── test_utils.py          # 317 total
 
 notebooks/
 └── sentivols.ipynb        # End-to-end demo
@@ -93,18 +116,18 @@ rapports/
 
 ## Installation
 
-**Requirements:** Python ≥ 3.10, conda base environment (includes `vaderSentiment`, `polars`, `pandas`, `lightgbm`).
+**Requirements:** Python ≥ 3.10.
 
 ```bash
 # Clone and enter the project
-cd "projet"
+cd projet
+pip install -e .
 
-# Install core dependencies (if not already present)
-pip install vaderSentiment pandas polars lightgbm matplotlib seaborn
+# Optional — LightGBM support
+pip install -e ".[lgbm]"
 
 # Optional — local LLM inference (llama.cpp / Ollama)
-python -m venv .venv
-.venv/bin/pip install llama-cpp-python ollama
+pip install llama-cpp-python ollama
 ```
 
 The Loughran-McDonald dictionary is bundled at `sentvols/internals/` — no external download needed.
@@ -147,7 +170,6 @@ df = ann.explain_to_dataframe(text)    # pandas DataFrame, sorted by |valence|
 ```python
 from sentvols.utils import Annotator
 
-# Local inference — no API key, no server
 ann = Annotator(
     normalizer="llama_cpp",
     model_path="/tmp/qwen2.5-0.5b-instruct-q4_k_m.gguf",
@@ -156,37 +178,86 @@ ann = Annotator(
 ann.score(
     "Oh great, another record quarter — record losses, that is."
 )  # → -0.36  NEG  (plain VADER gives +0.74)
-
-ann.score(
-    "Analysts do not expect the firm to file for bankruptcy protection."
-)  # → +0.72  POS  (plain VADER gives -0.54)
 ```
 
-### Pure LLM annotator
+### ML pipeline
 
 ```python
-from sentvols.utils import FinancialLLMAnnotator
-from sentvols.core.normalizers import OllamaBackend
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sentvols.models import SentvolsClassifier, SentvolsRegressor
 
-backend = OllamaBackend(model="qwen2.5:1.5b")
-ann = FinancialLLMAnnotator(backend)
+clf = SentvolsClassifier(estimator=RandomForestClassifier())
+reg = SentvolsRegressor(estimator=RandomForestRegressor())
 
-ann.score("Company posts record losses amid guidance cut")   # → -0.8
-ann.annotate_batch(headlines, workers=2)
+# HPO with Optuna — supply your own search space
+def search_space(trial):
+    return {
+        "n_estimators": trial.suggest_int("n_estimators", 50, 300),
+        "max_depth": trial.suggest_int("max_depth", 3, 10),
+    }
+
+clf.optimize(X_tr, y_tr, X_val, y_val, search_space=search_space, n_trials=30)
+clf.fit(X_tr, y_tr)
+
+# Production save / load
+clf.save("clf.joblib")
+clf2 = SentvolsClassifier.load("clf.joblib")
 ```
 
-### DataFrame workflow
+### Portfolio management
 
 ```python
-import polars as pl
-from sentvols.utils import Annotator
-from sentvols.core.utils import annotate_news
+from sentvols.portfolio import PortfolioBuilder, PortfolioManager
 
-ann = Annotator()
-df = pl.read_csv("data/raw/headlines.csv")
-df = annotate_news(df, ann.inner_annotator)
-# Adds columns: score, label
+# --- Build portfolio with ML models ---
+builder = PortfolioBuilder(n=50, weighting="softmax", freq="daily")
+portfolio = builder.build(df_test, clf, reg, X_clf, X_reg)
+
+# --- Or with precomputed scores (no models needed) ---
+portfolio = builder.build(df_test, scores=my_scores_array)
+
+# --- Backtest performance ---
+perf = builder.performance(portfolio, df_universe)
+metrics = builder.metrics(perf, portfolio)
+# {"ann_port": 0.18, "ann_bench": 0.09, "sharpe": 1.4, "ic": 0.12}
+
+# --- Live trading with PortfolioManager ---
+mgr = PortfolioManager(
+    initial_cash=100_000,
+    transaction_cost=0.001,   # 0.1% round-trip
+)
+
+prices = {"AAPL": 182.0, "MSFT": 415.0, "GOOG": 172.0}
+trades = mgr.rebalance(portfolio, prices)
+print(mgr.snapshot())
+# {"cash": 3241.5, "positions": {"AAPL": 274.7, ...}, "n_positions": 50}
+
+mgr.save("portfolio_state.joblib")
+mgr2 = PortfolioManager.load("portfolio_state.joblib")
 ```
+
+#### Weighting strategies
+
+| Strategy | Formula |
+|---|---|
+| `"equal"` *(default)* | $w_i = 1/n$ |
+| `"score"` | $w_i = (s_i - \min s) / \sum (s_j - \min s)$ |
+| `"softmax"` | $w_i = e^{s_i} / \sum e^{s_j}$ |
+| `"rank"` | $w_i \propto 1/\text{rank}_i$, normalised |
+| callable | `fn(scores: np.ndarray) -> np.ndarray` |
+
+#### Frequency aliases
+
+| Alias | Periods/year |
+|---|---|
+| `"monthly"` | 12 |
+| `"weekly"` | 52 |
+| `"daily"` | 252 |
+| `"hourly"` | 1 512 |
+| `"30min"` | 3 276 |
+| `"15min"` | 6 552 |
+| `"5min"` | 19 656 |
+| `"1min"` | 98 280 |
 
 ---
 
@@ -230,12 +301,10 @@ All backends expose the same `NormalizerBackend` protocol: `model`, `reasoning_a
 ## Running the tests
 
 ```bash
-# Uses the base conda environment
 python -m pytest tests/ -q
-# 249 passed
+# 317 passed, 23 warnings
 
-# Verbose with coverage per file
-python -m pytest tests/ -v --tb=short
+python -m pytest tests/ -v --tb=short  # verbose with failure details
 ```
 
 ---
@@ -259,3 +328,4 @@ Université du Québec à Montréal (UQAM)
 Session H2025 — Projet Fintech (20% de la note finale)
 
 The goal is to build a proof-of-concept application demonstrating how natural language processing can extract tradeable sentiment signals from financial news, bridging NLP and empirical asset pricing.
+
