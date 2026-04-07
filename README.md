@@ -324,8 +324,7 @@ Plus a 29-phrase context table for multi-word patterns, with a configurable `phr
 ## Course context
 
 **ECN 6578A — Économétrie des marchés financiers**  
-Université du Québec à Montréal (UQAM)  
-Session H2025 — Projet Fintech (20% de la note finale)
+Université du Montréal (UDEM)  
 
 The goal is to build a proof-of-concept application demonstrating how natural language processing can extract tradeable sentiment signals from financial news, bridging NLP and empirical asset pricing.
 
