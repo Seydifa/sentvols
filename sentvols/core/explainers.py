@@ -107,3 +107,159 @@ def run_hypothesis_tests(
         "permutation": perm_result,
         "diebold_mariano": dm_result,
     }
+
+
+# ---------------------------------------------------------------------------
+# OLS news-impact test (market-adjusted framework)
+# ---------------------------------------------------------------------------
+
+
+@registration(module="explainers")
+def test_ols_sentiment_impact(
+    df,
+    feature_cols: list[str],
+    col_dep: str = "abnormal_ret",
+    intercept: bool = False,
+    alpha_level: float = 0.05,
+) -> dict:
+    """OLS test: do sentiment features significantly predict abnormal returns?
+
+    The market-model residual (abnormal return) is used as the dependent
+    variable so that the coefficients measure the **pure news effect** after
+    removing systematic market risk.  This avoids the classic confound where
+    sentiment is correlated with the market cycle.
+
+    Model (no-intercept variant, ``intercept=False``):
+
+    .. math::
+
+        AR_{i,t} = \\sum_j \\hat{\\beta}_j X_{j,i,t} + \\varepsilon_{i,t}
+
+    Under the null :math:`H_0: \\beta_j = 0` for all *j* — i.e. news
+    sentiment has *no* marginal explanatory power for abnormal returns.
+
+    Parameters
+    ----------
+    df : pl.DataFrame or pd.DataFrame
+        Feature panel.  Must contain ``feature_cols`` and ``col_dep``.
+        NaN / null rows are dropped before fitting.
+    feature_cols : list[str]
+        Sentiment feature columns to include as regressors.  Typically a
+        subset of :data:`sentvols.features.SENTIMENT_FEATURE_COLS`.
+    col_dep : str
+        Dependent variable column.  Default ``"abnormal_ret"`` (output of
+        :func:`sentvols.features.add_abnormal_returns`).  Can be set to
+        ``"ret"`` for a raw-return regression (market effects NOT removed).
+    intercept : bool
+        If ``True``, prepend a column of ones to the design matrix.
+        Default ``False`` — assumes market adjustment has centred the
+        dependent variable around zero.
+    alpha_level : float
+        Significance level for the ``significant`` flag per coefficient.
+
+    Returns
+    -------
+    dict
+        ``n_obs``       — number of observations used.
+        ``feature_cols`` — list of regressor names (matches coefficient order).
+        ``coefs``       — OLS coefficient estimates, shape (k,).
+        ``se``          — heteroskedasticity-robust (HC3) standard errors, shape (k,).
+        ``t_stats``     — t-statistics, shape (k,).
+        ``p_values``    — two-sided p-values, shape (k,).
+        ``significant`` — bool array: p_value < alpha_level, shape (k,).
+        ``r_squared``   — coefficient of determination.
+        ``f_stat``      — F-statistic for joint significance (all β = 0).
+        ``f_pvalue``    — p-value for F-test.
+        ``summary``     — human-readable dict {feature: {coef, se, t, p, sig}}.
+    """
+    import polars as pl
+
+    # --- data prep ---
+    if isinstance(df, pl.DataFrame):
+        pdf = df.to_pandas()
+    else:
+        pdf = df.copy()
+
+    cols_needed = feature_cols + [col_dep]
+    pdf = pdf[cols_needed].dropna()
+    n = len(pdf)
+    if n < len(feature_cols) + 2:
+        raise ValueError(
+            f"test_ols_sentiment_impact: only {n} complete observations for "
+            f"{len(feature_cols)} regressors — too few to fit."
+        )
+
+    y = pdf[col_dep].values.astype(float)
+    X_raw = pdf[feature_cols].values.astype(float)
+    X = np.column_stack([np.ones(n), X_raw]) if intercept else X_raw
+    k = X.shape[1]
+    reg_names = (["_intercept"] + feature_cols) if intercept else feature_cols
+
+    # --- OLS via normal equations ---
+    XtX = X.T @ X
+    Xty = X.T @ y
+    try:
+        coefs = np.linalg.solve(XtX, Xty)
+    except np.linalg.LinAlgError:
+        coefs, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+
+    y_hat = X @ coefs
+    residuals = y - y_hat
+    ss_res = float(residuals @ residuals)
+    ss_tot = float(((y - y.mean()) ** 2).sum())
+    r_squared = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    dof = n - k
+
+    # --- HC3 robust standard errors (MacKinnon & White 1985) ---
+    h = np.einsum("ij,jk,ik->i", X, np.linalg.pinv(XtX), X)  # hat values
+    e_hc3 = residuals / (1 - h).clip(min=1e-10)  # inflation factor
+    Omega = np.diag(e_hc3**2)
+    meat = X.T @ Omega @ X
+    bread = np.linalg.pinv(XtX)
+    cov_hc3 = bread @ meat @ bread
+    se = np.sqrt(np.diag(cov_hc3).clip(min=0))
+
+    t_stats = coefs / np.where(se > 0, se, np.nan)
+    p_values = np.array(
+        [
+            float(2 * stats.t.sf(abs(t), df=dof)) if not np.isnan(t) else 1.0
+            for t in t_stats
+        ]
+    )
+    significant = p_values < alpha_level
+
+    # --- F-test for joint significance ---
+    if dof > 0:
+        f_stat = (
+            float((r_squared / k) / ((1 - r_squared) / dof))
+            if r_squared < 1
+            else float("inf")
+        )
+        f_pvalue = float(stats.f.sf(f_stat, dfn=k, dfd=dof))
+    else:
+        f_stat, f_pvalue = float("nan"), float("nan")
+
+    summary = {
+        name: {
+            "coef": float(coefs[i]),
+            "se": float(se[i]),
+            "t": float(t_stats[i]) if not np.isnan(t_stats[i]) else None,
+            "p": float(p_values[i]),
+            "significant": bool(significant[i]),
+        }
+        for i, name in enumerate(reg_names)
+    }
+
+    return {
+        "n_obs": n,
+        "feature_cols": reg_names,
+        "coefs": coefs,
+        "se": se,
+        "t_stats": t_stats,
+        "p_values": p_values,
+        "significant": significant,
+        "r_squared": r_squared,
+        "f_stat": f_stat,
+        "f_pvalue": f_pvalue,
+        "summary": summary,
+    }

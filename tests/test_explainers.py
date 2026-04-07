@@ -349,5 +349,137 @@ class TestExplainersNamespace:
             "test_classifier_permutation",
             "test_diebold_mariano",
             "run_hypothesis_tests",
+            "test_ols_sentiment_impact",
         }
         assert expected.issubset(set(explainers.__all__))
+
+
+# ---------------------------------------------------------------------------
+# test_ols_sentiment_impact
+# ---------------------------------------------------------------------------
+
+from sentvols.explainers import test_ols_sentiment_impact  # noqa: E402
+
+test_ols_sentiment_impact.__test__ = False
+
+import polars as pl  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def ols_panel():
+    """Synthetic panel where mean_score has a genuine positive effect on abnormal_ret."""
+    rng = np.random.default_rng(20)
+    n = 300
+    mean_score = rng.standard_normal(n)
+    std_score = np.abs(rng.standard_normal(n))
+    news_burst = rng.integers(0, 2, n).astype(float)
+    # abnormal_ret = 0.03 * mean_score + noise  (true coefficient ≈ 0.03)
+    abnormal_ret = 0.03 * mean_score + 0.005 * rng.standard_normal(n)
+    return pl.DataFrame(
+        {
+            "mean_score": mean_score,
+            "std_score": std_score,
+            "news_burst": news_burst,
+            "abnormal_ret": abnormal_ret,
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def ols_panel_null():
+    """Synthetic panel where features have NO effect on abnormal_ret."""
+    rng = np.random.default_rng(21)
+    n = 300
+    return pl.DataFrame(
+        {
+            "mean_score": rng.standard_normal(n),
+            "std_score": np.abs(rng.standard_normal(n)),
+            "news_burst": rng.integers(0, 2, n).astype(float),
+            "abnormal_ret": rng.standard_normal(n) * 0.01,
+        }
+    )
+
+
+class TestOLSSentimentImpact:
+    COLS = ["mean_score", "std_score", "news_burst"]
+
+    def test_returns_expected_keys(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        assert set(result.keys()) == {
+            "n_obs",
+            "feature_cols",
+            "coefs",
+            "se",
+            "t_stats",
+            "p_values",
+            "significant",
+            "r_squared",
+            "f_stat",
+            "f_pvalue",
+            "summary",
+        }
+
+    def test_n_obs_correct(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        assert result["n_obs"] == len(ols_panel)
+
+    def test_coefs_shape(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        assert result["coefs"].shape == (len(self.COLS),)
+
+    def test_se_non_negative(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        assert (result["se"] >= 0).all()
+
+    def test_p_values_in_unit_interval(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        assert np.all((result["p_values"] >= 0) & (result["p_values"] <= 1))
+
+    def test_significant_array_is_bool(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        assert result["significant"].dtype == bool
+
+    def test_true_effect_is_detected(self, ols_panel):
+        """mean_score has a true coefficient of ~0.03 — should be significant."""
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        idx_mean = self.COLS.index("mean_score")
+        assert result["p_values"][idx_mean] < 0.05
+        assert bool(result["significant"][idx_mean]) is True
+        assert result["coefs"][idx_mean] == pytest.approx(0.03, abs=0.01)
+
+    def test_null_features_mostly_insignificant(self, ols_panel_null):
+        """Under H0 (no true effect), most features should NOT be significant."""
+        result = test_ols_sentiment_impact(ols_panel_null, self.COLS)
+        n_sig = int(result["significant"].sum())
+        assert n_sig < len(self.COLS)  # at most some by chance
+
+    def test_r_squared_in_unit_interval(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        assert 0.0 <= result["r_squared"] <= 1.0
+
+    def test_intercept_mode_adds_intercept_name(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS, intercept=True)
+        assert "_intercept" in result["feature_cols"]
+        assert result["coefs"].shape == (len(self.COLS) + 1,)
+
+    def test_summary_keys_match_feature_cols(self, ols_panel):
+        result = test_ols_sentiment_impact(ols_panel, self.COLS)
+        assert set(result["summary"].keys()) == set(self.COLS)
+        for entry in result["summary"].values():
+            assert set(entry.keys()) == {"coef", "se", "t", "p", "significant"}
+
+    def test_polars_and_pandas_give_same_result(self, ols_panel):
+        res_pl = test_ols_sentiment_impact(ols_panel, self.COLS)
+        res_pd = test_ols_sentiment_impact(ols_panel.to_pandas(), self.COLS)
+        np.testing.assert_allclose(res_pl["coefs"], res_pd["coefs"], atol=1e-10)
+
+    def test_too_few_obs_raises(self):
+        tiny = pl.DataFrame({"mean_score": [0.1, 0.2], "abnormal_ret": [0.01, 0.02]})
+        with pytest.raises(ValueError, match="too few"):
+            test_ols_sentiment_impact(tiny, ["mean_score"])
+
+    def test_custom_dep_col(self, ols_panel):
+        """Can use raw 'ret' as dependent variable instead of 'abnormal_ret'."""
+        df_raw = ols_panel.with_columns(pl.col("abnormal_ret").alias("ret"))
+        result = test_ols_sentiment_impact(df_raw, self.COLS, col_dep="ret")
+        assert result["n_obs"] == len(df_raw)
