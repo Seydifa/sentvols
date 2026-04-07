@@ -12,7 +12,9 @@ import pytest
 
 from sentvols.core.normalizers import (
     AnthropicBackend,
+    FinancialRAGNormalizer,
     FinancialTextNormalizer,
+    LangChainBackend,
     LlamaCppBackend,
     NormalizationResult,
     NormalizerBackend,
@@ -282,7 +284,7 @@ class TestTransformersBackend:
         mock_out.__getitem__.return_value = MagicMock()  # out_ids[0]
         mock_mdl.generate.return_value = mock_out
 
-        backend._pipe = (mock_tok, mock_mdl, torch.device("cpu"))
+        backend._pipe = (mock_tok, mock_mdl)
         return backend
 
     def test_call_returns_text(self):
@@ -483,3 +485,242 @@ class TestLlamaCppBackend:
         b = self._make_backend("x")
         r = repr(b)
         assert "qwen2.5-0.5b-q4_k_m.gguf" in r
+
+
+# ---------------------------------------------------------------------------
+# LangChainBackend
+# ---------------------------------------------------------------------------
+
+
+def _mock_langchain_llm(content: str) -> MagicMock:
+    """Return a minimal mock that mimics a LangChain BaseChatModel."""
+    response = MagicMock()
+    response.content = content
+    llm = MagicMock()
+    llm.invoke.return_value = response
+    llm.model_name = "gpt-4o-mini"
+    return llm
+
+
+class TestLangChainBackend:
+    def test_satisfies_normalizerbackend_protocol(self):
+        backend = LangChainBackend(_mock_langchain_llm("out"))
+        assert isinstance(backend, NormalizerBackend)
+
+    def test_reasoning_available_false(self):
+        assert LangChainBackend(_mock_langchain_llm("x")).reasoning_available is False
+
+    def test_model_reads_model_name(self):
+        llm = _mock_langchain_llm("x")
+        llm.model_name = "claude-3-5-sonnet"
+        assert LangChainBackend(llm).model == "claude-3-5-sonnet"
+
+    def test_model_falls_back_to_model_attr(self):
+        # spec= limits accessible attrs so accessing model_name raises AttributeError
+        llm = MagicMock(spec=["invoke", "model"])
+        llm.invoke.return_value = MagicMock(content="x")
+        llm.model = "llama3.2:1b"
+        backend = LangChainBackend(llm)
+        assert backend.model == "llama3.2:1b"
+
+    def test_call_invokes_llm_invoke(self):
+        """call() must delegate to llm.invoke([HumanMessage(...)]) via lazy import."""
+        llm = _mock_langchain_llm("Positive outlook.")
+        fake_lc_core = types.ModuleType("langchain_core")
+        fake_messages = types.ModuleType("langchain_core.messages")
+        fake_messages.HumanMessage = lambda content: {
+            "role": "user",
+            "content": content,
+        }
+        fake_lc_core.messages = fake_messages
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "langchain_core": fake_lc_core,
+                "langchain_core.messages": fake_messages,
+            },
+        ):
+            backend = LangChainBackend(llm)
+            text, trace = backend.call("score this")
+
+        assert text == "Positive outlook."
+        assert trace is None
+        llm.invoke.assert_called_once()
+
+    def test_call_raises_without_langchain(self):
+        """ImportError surfaces with a clear message when langchain_core is absent."""
+        backend = LangChainBackend(_mock_langchain_llm("x"))
+        with patch.dict(
+            "sys.modules", {"langchain_core": None, "langchain_core.messages": None}
+        ):
+            with pytest.raises((ImportError, TypeError)):
+                backend.call("prompt")
+
+    def test_repr(self):
+        assert "LangChainBackend" in repr(LangChainBackend(_mock_langchain_llm("x")))
+
+    def test_works_as_normalizer_backend(self):
+        """End-to-end: LangChainBackend plugged into FinancialTextNormalizer."""
+        llm = _mock_langchain_llm("The company posted record losses.")
+        fake_lc_core = types.ModuleType("langchain_core")
+        fake_messages = types.ModuleType("langchain_core.messages")
+        fake_messages.HumanMessage = lambda content: {
+            "role": "user",
+            "content": content,
+        }
+        fake_lc_core.messages = fake_messages
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "langchain_core": fake_lc_core,
+                "langchain_core.messages": fake_messages,
+            },
+        ):
+            backend = LangChainBackend(llm)
+            norm = FinancialTextNormalizer(backend)
+            result = norm.normalize(
+                "Great quarter — just kidding, losses everywhere.", mode="rewrite"
+            )
+
+        assert isinstance(result, NormalizationResult)
+        assert result.backend == "LangChainBackend"
+        assert result.llm_used is True
+
+
+# ---------------------------------------------------------------------------
+# FinancialRAGNormalizer
+# ---------------------------------------------------------------------------
+
+
+def _make_rag_normalizer(
+    reply: str = "The company posted losses.",
+) -> FinancialRAGNormalizer:
+    """Return a FinancialRAGNormalizer with mocked backend and stubbed _retrieve()
+    so no sentence-transformers install is required in CI."""
+    client = _mock_openai_client(reply)
+    backend = OpenAIBackend(client=client, model="gpt-4o-mini")
+    norm = FinancialRAGNormalizer(backend, top_k=4)
+    norm._retrieve = lambda text: (
+        ["earnings beat", "raised guidance"],
+        ["impairment", "default"],
+    )
+    return norm
+
+
+class TestFinancialRAGNormalizer:
+    def test_is_subclass_of_financial_text_normalizer(self):
+        assert isinstance(_make_rag_normalizer(), FinancialTextNormalizer)
+
+    def test_backend_satisfies_protocol(self):
+        assert isinstance(_make_rag_normalizer()._backend, NormalizerBackend)
+
+    def test_invalid_top_k_raises(self):
+        client = _mock_openai_client("x")
+        backend = OpenAIBackend(client=client, model="gpt-4o-mini")
+        with pytest.raises(ValueError, match="top_k"):
+            FinancialRAGNormalizer(backend, top_k=1)
+
+    def test_invalid_sim_threshold_raises(self):
+        client = _mock_openai_client("x")
+        backend = OpenAIBackend(client=client, model="gpt-4o-mini")
+        with pytest.raises(ValueError, match="sim_threshold"):
+            FinancialRAGNormalizer(backend, top_k=4, sim_threshold=0.0)
+        with pytest.raises(ValueError, match="sim_threshold"):
+            FinancialRAGNormalizer(backend, top_k=4, sim_threshold=1.5)
+
+    def test_normalize_rewrite_returns_normalization_result(self):
+        result = _make_rag_normalizer().normalize(
+            "Oh great, record losses.", mode="rewrite"
+        )
+        assert isinstance(result, NormalizationResult)
+        assert result.normalized_text == "The company posted losses."
+        assert result.llm_used is True
+        assert result.mode == "rewrite"
+
+    def test_vocabulary_hints_appear_in_prompt(self):
+        result = _make_rag_normalizer().normalize(
+            "Company announces record losses.", mode="rewrite"
+        )
+        assert "earnings beat" in result.prompt_used
+        assert "impairment" in result.prompt_used
+
+    def test_extract_mode_bypasses_rag(self):
+        client = _mock_openai_client("Key facts: losses.")
+        backend = OpenAIBackend(client=client, model="gpt-4o-mini")
+        norm = FinancialRAGNormalizer(backend, top_k=4)
+        retrieve_called: list = []
+        norm._retrieve = lambda text: retrieve_called.append(text) or ([], [])
+        norm.normalize("Long article text...", mode="extract")
+        assert len(retrieve_called) == 0
+
+    def test_summarize_mode_bypasses_rag(self):
+        client = _mock_openai_client("Summary.")
+        backend = OpenAIBackend(client=client, model="gpt-4o-mini")
+        norm = FinancialRAGNormalizer(backend, top_k=4)
+        retrieve_called: list = []
+        norm._retrieve = lambda text: retrieve_called.append(text) or ([], [])
+        result = norm.normalize("Some article.", mode="summarize")
+        assert len(retrieve_called) == 0
+        assert result.normalized_text == "Summary."
+
+    def test_invalid_mode_raises(self):
+        with pytest.raises(ValueError, match="mode"):
+            _make_rag_normalizer().normalize("text", mode="bad_mode")
+
+    def test_provenance_fields_correct(self):
+        result = _make_rag_normalizer("Out.").normalize(
+            "Sarcastic text.", mode="rewrite"
+        )
+        assert result.backend == "OpenAIBackend"
+        assert result.model == "gpt-4o-mini"
+        assert result.original_text == "Sarcastic text."
+        assert result.reasoning_available is False
+
+    def test_normalize_if_needed_short_text_skip(self):
+        result = _make_rag_normalizer().normalize_if_needed(
+            "Revenue up.", threshold_chars=300, mode="rewrite"
+        )
+        assert result.llm_used is False
+        assert result.normalized_text == "Revenue up."
+
+    def test_repr(self):
+        r = repr(_make_rag_normalizer())
+        assert "FinancialRAGNormalizer" in r
+        assert "top_k=4" in r
+        assert "sim_threshold=" in r
+
+    def test_neutral_text_below_threshold_falls_back_to_base(self):
+        """When _retrieve returns empty lists the RAG layer must be bypassed.
+
+        This is the core anti-contamination guard: genuinely neutral text
+        (no LM-lexicon term above sim_threshold) must NOT receive vocabulary
+        hints that would distort its downstream VADER+LM score.
+        """
+        client = _mock_openai_client("The company reported quarterly results.")
+        backend = OpenAIBackend(client=client, model="gpt-4o-mini")
+        norm = FinancialRAGNormalizer(backend, top_k=4)
+        # Simulate retrieval finding nothing above threshold
+        norm._retrieve = lambda text: ([], [])
+
+        result = norm.normalize(
+            "The company reported quarterly results in line with analyst consensus.",
+            mode="rewrite",
+        )
+        # Must still produce a result (base-class fallback runs)
+        assert isinstance(result, NormalizationResult)
+        assert result.llm_used is True
+        # The RAG-augmented prompt must NOT be used — no hint placeholders
+        assert "{pos_hints}" not in result.prompt_used
+        assert "{neg_hints}" not in result.prompt_used
+        # Neither hint term should appear in the prompt (nothing was retrieved)
+        assert "earnings beat" not in result.prompt_used
+        assert "impairment" not in result.prompt_used
+
+    def test_exported_via_utils(self):
+        """Both new classes must be reachable through sentvols.utils."""
+        from sentvols import utils
+
+        assert hasattr(utils, "FinancialRAGNormalizer")
+        assert hasattr(utils, "LangChainBackend")

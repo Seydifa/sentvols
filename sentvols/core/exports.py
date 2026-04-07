@@ -7,7 +7,7 @@ from collections import defaultdict
 
 _EXPORT_REGISTRY = defaultdict(dict)
 _CORE_MODULES_LOADED = False
-_PUBLIC_MODULES = ("explainers", "models", "plots", "utils")
+_PUBLIC_MODULES = ("explainers", "models", "plots", "portfolio", "utils")
 
 
 def _load_core_modules():

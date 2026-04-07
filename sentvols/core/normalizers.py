@@ -12,7 +12,9 @@ Exported to ``sentvols.utils``:
     ReasoningBackend
     AnthropicBackend
     TransformersBackend
+    LangChainBackend
     FinancialTextNormalizer
+    FinancialRAGNormalizer
 
 Design principles
 -----------------
@@ -1052,4 +1054,367 @@ class FinancialTextNormalizer:
             f"FinancialTextNormalizer("
             f"backend={self._backend!r}, "
             f"reasoning_available={self._backend.reasoning_available})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# LangChainBackend  (thin adapter — zero hard dependency)
+# ---------------------------------------------------------------------------
+
+
+@registration(module="utils")
+class LangChainBackend:
+    """Adapter that wraps any LangChain ``BaseChatModel`` as a ``NormalizerBackend``.
+
+    Users who already have LangChain installed can plug **any** supported
+    provider (``ChatOpenAI``, ``ChatAnthropic``, ``ChatOllama``, ``ChatGroq``,
+    ``ChatMistralAI``, …) into :class:`FinancialTextNormalizer` or
+    :class:`FinancialRAGNormalizer` without reimplementing the call protocol.
+
+    ``langchain_core`` is imported **lazily inside call()** — constructing this
+    class does not require LangChain to be installed, and ``import sentvols``
+    never fails for users without it.
+
+    Parameters
+    ----------
+    llm :
+        Any ``langchain_core.language_models.BaseChatModel`` instance,
+        already configured with credentials, model name, and temperature.
+
+    Examples
+    --------
+    >>> from langchain_openai import ChatOpenAI
+    >>> from sentvols.utils import LangChainBackend, FinancialTextNormalizer
+    >>> lc_backend = LangChainBackend(ChatOpenAI(model="gpt-4o-mini", temperature=0))
+    >>> norm = FinancialTextNormalizer(lc_backend)
+    >>> result = norm.normalize(long_article, mode="rewrite")
+    """
+
+    def __init__(self, llm) -> None:
+        self._llm = llm
+
+    # --- NormalizerBackend protocol -------------------------------------------
+
+    @property
+    def model(self) -> str:
+        """Model identifier — reads ``model_name`` or ``model`` from the LLM."""
+        return getattr(
+            self._llm,
+            "model_name",
+            getattr(self._llm, "model", type(self._llm).__name__),
+        )
+
+    @property
+    def reasoning_available(self) -> bool:
+        # LangChain's standard API does not surface internal reasoning traces.
+        return False
+
+    def call(self, prompt: str) -> tuple[str, None]:
+        """Invoke the LangChain LLM with *prompt* as a single human message.
+
+        Returns ``(response_text, None)`` — no reasoning trace.
+
+        Raises
+        ------
+        ImportError
+            If ``langchain_core`` is not installed.
+        """
+        try:
+            from langchain_core.messages import HumanMessage
+        except ImportError as exc:
+            raise ImportError(
+                "The 'langchain-core' package is required for LangChainBackend.  "
+                "Install it with:  pip install langchain-core"
+            ) from exc
+        response = self._llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip(), None
+
+    def __repr__(self) -> str:
+        return f"LangChainBackend(llm={self._llm!r})"
+
+
+# ---------------------------------------------------------------------------
+# LM-lexicon RAG corpus (module-level, built once on first access)
+# ---------------------------------------------------------------------------
+# We store the corpus as a module-level tuple so multiple
+# FinancialRAGNormalizer instances built in the same process share the same
+# numpy arrays without recomputing embeddings every time.
+
+_RAG_CORPUS: tuple | None = None  # (terms: list[str], valences: list[float],
+#                                     embeddings: np.ndarray, encoder)
+
+
+def _get_rag_corpus(embed_model: str):
+    """Build or return the shared RAG lexicon corpus.
+
+    The corpus is built **once per process** from ``_LM_LEXICON``,
+    ``CONTEXT_PHRASES``, and ``_HEADLINE_PATCH``.  The embedding model is
+    loaded lazily so ``import sentvols`` is never slowed down.
+
+    Building takes ~0.5 s for 4 000 terms on CPU (``all-MiniLM-L6-v2``
+    produces 384-dim embeddings in a single batch pass).  Results are cached
+    on ``_RAG_CORPUS`` so subsequent instances reuse the same arrays.
+
+    Parameters
+    ----------
+    embed_model : str
+        SentenceTransformer model identifier.
+
+    Returns
+    -------
+    tuple of (terms, valences, embeddings, encoder)
+    """
+    global _RAG_CORPUS
+    if _RAG_CORPUS is not None:
+        return _RAG_CORPUS
+
+    try:
+        import numpy as np
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise ImportError(
+            "The 'sentence-transformers' and 'numpy' packages are required for "
+            "FinancialRAGNormalizer.  Install them with:\n"
+            "  pip install 'sentvols[rag]'\n"
+            "or:  pip install sentence-transformers numpy"
+        ) from exc
+
+    # Deferred import to avoid circular dependency at module load time.
+    from .annotators import CONTEXT_PHRASES, _HEADLINE_PATCH, _LM_LEXICON
+
+    # Merge all term→valence sources; skip neutral entries (valence == 0)
+    merged: dict[str, float] = {}
+    merged.update({t: v for t, v in _LM_LEXICON.items() if v != 0.0})
+    merged.update({t: v for t, v in _HEADLINE_PATCH.items() if v != 0.0})
+    merged.update({t: v for t, v in CONTEXT_PHRASES.items() if v != 0.0})
+
+    terms = list(merged.keys())
+    valences = list(merged.values())
+
+    encoder = SentenceTransformer(embed_model)
+    # L2-normalised embeddings: cosine similarity == dot product (faster lookup)
+    embeddings = encoder.encode(
+        terms,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+        batch_size=256,  # single GPU/CPU pass over the small corpus
+    )
+    _RAG_CORPUS = (terms, valences, np.array(embeddings, dtype="float32"), encoder)
+    return _RAG_CORPUS
+
+
+# RAG-augmented rewrite prompt — vocabulary hint layer injected between the
+# few-shot examples and the live input so the LLM stays grounded in the exact
+# words that VADER+LM can score.
+#
+# IMPORTANT: the hint section uses intentionally conservative language so the
+# LLM does NOT introduce sentiment absent from the source text.  Hints are
+# only injected when retrieval similarity exceeds `sim_threshold` — genuinely
+# neutral text skips this prompt entirely and falls back to the base class.
+_RAG_REWRITE_PROMPT: str = (
+    "SYSTEM: You translate financial prose into literal one-sentence financial "
+    "facts for a sentiment classifier. Sarcasm → literal negative. "
+    "Long negation → 'No X anticipated'.\n"
+    "CRITICAL RULE: preserve only sentiment that is already present in the "
+    "source text. Never introduce evaluative words that the source does not "
+    "express, even if they appear in the hints below.\n\n"
+    "IN:  Oh great, another record quarter — record losses, that is. "
+    "Management helpfully reminded investors that burning through cash at "
+    "twice the rate is part of the plan.\n"
+    "OUT: The company posted record losses and is burning through cash at "
+    "twice the prior rate.\n\n"
+    "IN:  Analysts do not expect the firm to file for bankruptcy protection.\n"
+    "OUT: No bankruptcy filing is anticipated.\n\n"
+    "IN:  While headwinds remain, the company posted stronger earnings "
+    "and raised the dividend.\n"
+    "OUT: The company posted stronger earnings and raised dividends.\n\n"
+    "VOCABULARY HINTS — if the original text already expresses the "
+    "corresponding concept, prefer these LM-lexicon terms in your rewrite so "
+    "the downstream scorer can detect them.  Do NOT use a hint term unless "
+    "its concept is directly present in the source sentence.\n"
+    "  Positive (use only if positive concept is in source): {pos_hints}\n"
+    "  Negative (use only if negative concept is in source): {neg_hints}\n\n"
+    "IN:  {text}\n"
+    "OUT:"
+)
+
+
+@registration(module="utils")
+class FinancialRAGNormalizer(FinancialTextNormalizer):
+    """LM-lexicon retrieval-augmented normalizer for the VADER+LM pipeline.
+
+    Extends :class:`FinancialTextNormalizer` by **injecting vocabulary hints**
+    into the ``"rewrite"`` prompt before each LLM call.  The hints are the
+    top-K LM-lexicon terms most semantically similar to the input text, split
+    by polarity.  This closes the gap between what the LLM writes and what
+    VADER+LM can score: even if the LLM paraphrases correctly, it now has
+    explicit cues to use high-valence words like *"impairment"*, *"delinquent"*,
+    or *"raised guidance"* that VADER+LM recognises.
+
+    ``"extract"`` and ``"summarize"`` modes are passed through unchanged to
+    the parent class — RAG only augments the ``"rewrite"`` path.
+
+    Runtime optimisations
+    ---------------------
+    * **Shared corpus**: the embedding index is built once per process and
+      cached at module level (``_RAG_CORPUS``).  Subsequent instances reuse
+      the same numpy arrays — zero redundant model loads.
+    * **Lazy build**: the encoder is loaded only on the first ``normalize()``
+      call with ``mode="rewrite"``, so construction is instant and
+      ``import sentvols`` is never slowed down.
+    * **Brute-force cosine**: with ~4 000 terms at 384 dim a single ``@``
+      dot-product takes < 1 ms on CPU — no vector-DB overhead needed.
+    * **Query-level batch**: the query embedding is computed in a single
+      ``encoder.encode([query])`` call; no unnecessary batching.
+
+    Parameters
+    ----------
+    backend : NormalizerBackend
+        Any object satisfying the :class:`NormalizerBackend` protocol.
+    top_k : int, default 8
+        Total vocabulary hints injected (split evenly between positive and
+        negative polarity, i.e. ``top_k // 2`` each).
+    embed_model : str, default ``"all-MiniLM-L6-v2"``
+        SentenceTransformer model used for retrieval.  Loaded lazily on first
+        ``normalize()`` call and cached for subsequent calls.  The default
+        model is ~80 MB and runs on CPU in < 50 ms per query.
+
+    Examples
+    --------
+    >>> from sentvols.utils import FinancialRAGNormalizer, OllamaBackend
+    >>> backend = OllamaBackend("qwen2.5:0.5b")
+    >>> norm = FinancialRAGNormalizer(backend, top_k=8)
+    >>> result = norm.normalize(
+    ...     "Oh great, another record quarter — record losses, that is.",
+    ...     mode="rewrite",
+    ... )
+    >>> print(result.normalized_text)
+    >>> print(result.prompt_used)     # shows injected vocabulary hints
+    """
+
+    def __init__(
+        self,
+        backend,
+        *,
+        top_k: int = 8,
+        embed_model: str = "all-MiniLM-L6-v2",
+        sim_threshold: float = 0.40,
+    ) -> None:
+        super().__init__(backend)
+        if top_k < 2:
+            raise ValueError(f"top_k must be >= 2, got {top_k}.")
+        if not 0.0 < sim_threshold < 1.0:
+            raise ValueError(f"sim_threshold must be in (0, 1), got {sim_threshold}.")
+        self._top_k = top_k
+        self._embed_model = embed_model
+        self._sim_threshold = sim_threshold
+
+    # ------------------------------------------------------------------
+    # Retrieval
+    # ------------------------------------------------------------------
+
+    def _retrieve(self, query: str) -> tuple[list[str], list[str]]:
+        """Return (positive_hints, negative_hints) via cosine retrieval.
+
+        Only terms whose similarity to *query* exceeds ``sim_threshold`` are
+        considered.  If no term clears the threshold (i.e. the text uses
+        vocabulary not represented in the LM lexicon, which is the typical
+        signature of genuinely neutral prose) **both lists are empty**.  The
+        caller (:meth:`normalize`) treats empty lists as a signal to bypass
+        hint injection entirely and fall back to the base-class prompt so the
+        LLM is not pushed toward unwarranted sentiment.
+        """
+        import numpy as np
+
+        terms, valences, embeddings, encoder = _get_rag_corpus(self._embed_model)
+
+        q_emb = encoder.encode(
+            [query], normalize_embeddings=True, show_progress_bar=False
+        )[0].astype("float32")
+
+        # cosine similarity = dot product (embeddings are already L2-normalised)
+        sims = embeddings @ q_emb
+        # Over-fetch so we have enough to fill both polarity buckets
+        candidate_idx = np.argsort(sims)[::-1][: self._top_k * 3]
+
+        half = max(1, self._top_k // 2)
+        pos: list[str] = []
+        neg: list[str] = []
+        for i in candidate_idx:
+            if float(sims[i]) < self._sim_threshold:
+                # Candidates are sorted descending — all remaining are below threshold.
+                # Stop: the text has no sufficiently similar LM-lexicon vocabulary.
+                break
+            if valences[i] > 0 and len(pos) < half:
+                pos.append(terms[i])
+            elif valences[i] < 0 and len(neg) < half:
+                neg.append(terms[i])
+            if len(pos) >= half and len(neg) >= half:
+                break
+
+        return pos, neg
+
+    # ------------------------------------------------------------------
+    # Override normalize() for the "rewrite" mode only
+    # ------------------------------------------------------------------
+
+    def normalize(self, text: str, mode: str = "extract") -> NormalizationResult:
+        """Normalize *text*, injecting LM-lexicon vocabulary hints for ``mode="rewrite"``.
+
+        For ``"extract"`` and ``"summarize"`` the call is forwarded to the
+        parent :class:`FinancialTextNormalizer` without modification.
+
+        Parameters
+        ----------
+        text : str
+        mode : str, default ``"extract"``
+
+        Returns
+        -------
+        NormalizationResult
+            ``prompt_used`` contains the full RAG-augmented prompt so the
+            injected hints are fully auditable.
+        """
+        if mode not in _VALID_MODES:
+            raise ValueError(
+                f"mode must be one of {sorted(_VALID_MODES)}, got {mode!r}."
+            )
+
+        if mode != "rewrite":
+            return super().normalize(text, mode=mode)
+
+        pos_hints, neg_hints = self._retrieve(text)
+
+        # If retrieval returned nothing it means no LM-lexicon term cleared
+        # sim_threshold — the text is generic/neutral enough that injecting
+        # hints would corrupt rather than improve the score.  Fall back to the
+        # base-class rewrite prompt which makes no vocabulary assumptions.
+        if not pos_hints and not neg_hints:
+            return super().normalize(text, mode=mode)
+
+        prompt = _RAG_REWRITE_PROMPT.format(
+            pos_hints=", ".join(pos_hints) if pos_hints else "—",
+            neg_hints=", ".join(neg_hints) if neg_hints else "—",
+            text=text,
+        )
+        normalized, trace = self._backend.call(prompt)
+        return NormalizationResult(
+            normalized_text=normalized,
+            original_text=text,
+            backend=type(self._backend).__name__,
+            model=self._backend.model,
+            mode=mode,
+            prompt_used=prompt,
+            reasoning_trace=trace,
+            reasoning_available=self._backend.reasoning_available,
+            llm_used=True,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"FinancialRAGNormalizer("
+            f"backend={self._backend!r}, "
+            f"top_k={self._top_k}, "
+            f"embed_model={self._embed_model!r}, "
+            f"sim_threshold={self._sim_threshold})"
         )
