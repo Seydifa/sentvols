@@ -1096,6 +1096,118 @@ class FinancialTextNormalizer:
                 return list(pool.map(_norm, texts))
         return [_norm(t) for t in texts]
 
+    def normalize_if_needed_batch(
+        self,
+        texts: list[str],
+        threshold_chars: int = 300,
+        mode: str = "extract",
+        batch_size: int = 256,
+        workers: int = 1,
+    ) -> list[NormalizationResult]:
+        """Batch-aware equivalent of :meth:`normalize_if_needed`.
+
+        Short texts (< *threshold_chars*) are returned as passthrough results
+        immediately — no LLM call.  Texts that exceed the threshold are
+        collected and sent to the backend in one or more batched calls:
+
+        * If the backend exposes ``batch_call()``, prompts are submitted
+          *batch_size* at a time, amortising per-request overhead and
+          enabling PagedAttention / padded-generate optimisations.
+        * Otherwise falls back to a thread pool over
+          :meth:`normalize_if_needed` (same behaviour as ``workers > 1``
+          on :meth:`normalize_batch`).
+
+        Parameters
+        ----------
+        texts : list[str]
+        threshold_chars : int, default 300
+        mode : str, default ``"extract"``
+        batch_size : int, default 256
+            Maximum number of prompts per ``batch_call()``.  Tune down if the
+            backend runs out of memory; tune up for API-hosted models where
+            latency dominates.
+        workers : int, default 1
+            Thread-pool size used **only** when the backend has no
+            ``batch_call()`` method.
+
+        Returns
+        -------
+        list[NormalizationResult]
+            One result per input text, in the same order as *texts*.
+        """
+        if mode not in _VALID_MODES:
+            raise ValueError(
+                f"mode must be one of {sorted(_VALID_MODES)}, got {mode!r}."
+            )
+
+        results: list[NormalizationResult | None] = [None] * len(texts)
+
+        passthrough_indices: list[int] = []
+        llm_indices: list[int] = []
+        for i, t in enumerate(texts):
+            if len(t) < threshold_chars:
+                passthrough_indices.append(i)
+            else:
+                llm_indices.append(i)
+
+        # ── passthrough results (no LLM) ──────────────────────────────────
+        for i in passthrough_indices:
+            results[i] = NormalizationResult(
+                normalized_text=texts[i],
+                original_text=texts[i],
+                backend="passthrough",
+                model="none",
+                mode=mode,
+                prompt_used="",
+                reasoning_trace=None,
+                reasoning_available=False,
+                llm_used=False,
+            )
+
+        if not llm_indices:
+            return results  # type: ignore[return-value]
+
+        # ── LLM path ──────────────────────────────────────────────────────
+        backend = self._backend
+        if hasattr(backend, "batch_call"):
+            # Build all prompts once, then submit in chunks
+            long_texts = [texts[i] for i in llm_indices]
+            prompts = [_PROMPTS[mode].format(text=t) for t in long_texts]
+            raw_pairs: list[tuple[str, str | None]] = []
+            for start in range(0, len(prompts), batch_size):
+                raw_pairs.extend(
+                    backend.batch_call(prompts[start : start + batch_size])
+                )
+
+            for j, i in enumerate(llm_indices):
+                raw_text, trace = raw_pairs[j]
+                results[i] = NormalizationResult(
+                    normalized_text=raw_text.strip() if raw_text else texts[i],
+                    original_text=texts[i],
+                    backend=type(backend).__name__,
+                    model=backend.model,
+                    mode=mode,
+                    prompt_used=prompts[j],
+                    reasoning_trace=trace,
+                    reasoning_available=backend.reasoning_available,
+                    llm_used=True,
+                )
+        else:
+            # No batch_call — use thread pool for concurrent per-item calls
+            _fn = lambda t: self.normalize_if_needed(  # noqa: E731
+                t, threshold_chars=threshold_chars, mode=mode
+            )
+            long_texts = [texts[i] for i in llm_indices]
+            if workers > 1:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    llm_results = list(pool.map(_fn, long_texts))
+            else:
+                llm_results = [_fn(t) for t in long_texts]
+            for j, i in enumerate(llm_indices):
+                results[i] = llm_results[j]
+
+        return results  # type: ignore[return-value]
+
     def __repr__(self) -> str:
         return (
             f"FinancialTextNormalizer("

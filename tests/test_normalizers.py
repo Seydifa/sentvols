@@ -461,6 +461,88 @@ class TestFinancialTextNormalizer:
         assert result.reasoning_trace == "my reasoning"
         assert result.reasoning_available is True
 
+    # ------------------------------------------------------------------
+    # normalize_if_needed_batch
+    # ------------------------------------------------------------------
+
+    def _make_batch_normalizer(self, replies: list[str]):
+        """Normalizer whose backend.batch_call() returns the given replies."""
+        batch_mock = MagicMock(
+            return_value=[(r, None) for r in replies]
+        )
+
+        class _BatchBackend:
+            model = "batch-mock"
+            reasoning_available = False
+
+            def call(self, prompt: str):  # pragma: no cover
+                return (replies[0], None)
+
+            batch_call = batch_mock
+
+        norm = FinancialTextNormalizer.__new__(FinancialTextNormalizer)
+        norm._backend = _BatchBackend()
+        return norm, batch_mock
+
+    def test_normalize_if_needed_batch_returns_correct_length(self):
+        texts = ["short", "y" * 400, "z" * 400]
+        norm, _ = self._make_batch_normalizer(["out1", "out2"])
+        results = norm.normalize_if_needed_batch(texts, threshold_chars=10)
+        assert len(results) == 3
+
+    def test_normalize_if_needed_batch_passthrough_for_short(self):
+        short = "hi"
+        norm, batch_mock = self._make_batch_normalizer([])
+        results = norm.normalize_if_needed_batch([short], threshold_chars=10)
+        assert results[0].llm_used is False
+        assert results[0].normalized_text == short
+        batch_mock.assert_not_called()
+
+    def test_normalize_if_needed_batch_uses_batch_call_for_long(self):
+        long_text = "x" * 400
+        norm, batch_mock = self._make_batch_normalizer(["extracted"])
+        results = norm.normalize_if_needed_batch([long_text], threshold_chars=10)
+        batch_mock.assert_called_once()
+        assert results[0].llm_used is True
+        assert results[0].normalized_text == "extracted"
+
+    def test_normalize_if_needed_batch_single_batch_call_for_all_long(self):
+        """All long texts fit in one chunk → batch_call called exactly once."""
+        long_texts = ["x" * 400] * 5
+        norm, batch_mock = self._make_batch_normalizer(["r"] * 5)
+        norm.normalize_if_needed_batch(long_texts, threshold_chars=10, batch_size=256)
+        batch_mock.assert_called_once()
+
+    def test_normalize_if_needed_batch_chunked_when_exceeds_batch_size(self):
+        """Long texts exceeding batch_size span multiple batch_call() calls."""
+        n = 7
+        long_texts = ["x" * 400] * n
+        norm, batch_mock = self._make_batch_normalizer(["r"] * n)
+        # batch_size=3 → ceil(7/3) = 3 calls
+        batch_mock.return_value = [("r", None)] * 3  # first call returns 3
+        # patch to return correct sizes per chunk
+        batch_mock.side_effect = [
+            [("r", None)] * min(3, n - i * 3)
+            for i in range((n + 2) // 3)
+        ]
+        norm.normalize_if_needed_batch(long_texts, threshold_chars=10, batch_size=3)
+        assert batch_mock.call_count == 3
+
+    def test_normalize_if_needed_batch_preserves_order(self):
+        """Mixed short/long texts come back in original index order."""
+        texts = ["short", "x" * 400, "y" * 400, "also short"]
+        norm, batch_mock = self._make_batch_normalizer(["llm_a", "llm_b"])
+        results = norm.normalize_if_needed_batch(texts, threshold_chars=300)
+        assert results[0].normalized_text == "short"
+        assert results[1].normalized_text == "llm_a"
+        assert results[2].normalized_text == "llm_b"
+        assert results[3].normalized_text == "also short"
+
+    def test_normalize_if_needed_batch_invalid_mode_raises(self):
+        norm = self._make_normalizer()
+        with pytest.raises(ValueError, match="mode"):
+            norm.normalize_if_needed_batch(["text"], mode="bad_mode")
+
 
 # ---------------------------------------------------------------------------
 # OllamaBackend

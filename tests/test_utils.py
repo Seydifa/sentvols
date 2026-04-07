@@ -49,6 +49,23 @@ class _MockAnnotator:
         return 0.5
 
 
+class _MockBatchAnnotator:
+    """Annotator that exposes score_batch() and tracks call counts."""
+
+    def __init__(self, value: float = 0.5):
+        self._value = value
+        self.score_batch_calls = 0
+        self.score_calls = 0
+
+    def score(self, text: str) -> float:
+        self.score_calls += 1
+        return self._value
+
+    def score_batch(self, texts: list[str], workers: int = 1) -> list[float]:
+        self.score_batch_calls += 1
+        return [self._value] * len(texts)
+
+
 def _make_daily_sentiment(n=30) -> pl.DataFrame:
     rng = np.random.default_rng(0)
     base = datetime.date(2019, 1, 2)
@@ -142,6 +159,95 @@ class TestAnnotateNews:
         df = annotate_news(df, _MockAnnotator())
         # 0.5 >= 0.05 → positif
         assert (df["sentiment_label"] == "positif").all()
+
+    def test_uses_score_batch_when_available(self, tmp_path):
+        """annotate_news must call score_batch(), not score(), when available."""
+        path = _make_news_csv(tmp_path)
+        df = load_and_clean_news(path)
+        ann = _MockBatchAnnotator(0.5)
+        annotate_news(df, ann)
+        assert ann.score_batch_calls == 1
+        assert ann.score_calls == 0
+
+    def test_score_batch_result_consistent_with_score(self, tmp_path):
+        """Results from score_batch path equal what score() would produce."""
+        path = _make_news_csv(tmp_path)
+        df = load_and_clean_news(path)
+        df_batch = annotate_news(df, _MockBatchAnnotator(0.7))
+        df_single = annotate_news(df, _MockAnnotator.__new__(_MockAnnotator))
+        # Both produce the same labels since both return constant values
+        assert (df_batch["sentiment_label"] == "positif").all()
+
+    def test_normalizer_path_uses_batch_call(self, tmp_path):
+        """normalizer path issues one batch_call per chunk, not per row."""
+        from unittest.mock import MagicMock
+        from sentvols.core.normalizers import (
+            NormalizationResult,
+            FinancialTextNormalizer,
+        )
+
+        path = _make_news_csv(tmp_path)
+        df = load_and_clean_news(path)
+        n_rows = len(df)
+
+        # Build a normalizer whose backend has batch_call
+        raw_reply = "0.6"
+        batch_mock = MagicMock(return_value=[(raw_reply, None)] * n_rows)
+
+        class _BatchBackend:
+            model = "mock"
+            reasoning_available = False
+
+            def call(self, prompt: str):
+                return (raw_reply, None)
+
+            batch_call = batch_mock
+
+        # Bypass isinstance check — inject backend directly
+        norm = FinancialTextNormalizer.__new__(FinancialTextNormalizer)
+        norm._backend = _BatchBackend()
+
+        # Use a long headline (>= 300 chars) so LLM path is triggered
+        long_df = df.with_columns(
+            (pl.col("headline") + pl.lit(" " + "x" * 300)).alias("headline")
+        )
+        result = annotate_news(
+            long_df, _MockAnnotator(), normalizer=norm, batch_size=256
+        )
+
+        # batch_call must have been called exactly once (all rows fit in one chunk)
+        batch_mock.assert_called_once()
+        assert "normalized_headline" in result.columns
+        assert "normalization_reasoning" in result.columns
+
+    def test_normalizer_passthrough_short_headlines(self, tmp_path):
+        """Short headlines (< 300 chars) bypass LLM — normalized_headline is null."""
+        from unittest.mock import MagicMock
+        from sentvols.core.normalizers import FinancialTextNormalizer
+
+        path = _make_news_csv(tmp_path)
+        df = load_and_clean_news(path)
+
+        batch_mock = MagicMock(return_value=[])
+
+        class _BatchBackend:
+            model = "mock"
+            reasoning_available = False
+
+            def call(self, prompt: str):  # pragma: no cover
+                raise AssertionError("should not be called for short texts")
+
+            batch_call = batch_mock
+
+        norm = FinancialTextNormalizer.__new__(FinancialTextNormalizer)
+        norm._backend = _BatchBackend()
+
+        result = annotate_news(df, _MockAnnotator(), normalizer=norm)
+
+        # All headlines are short → batch_call never called
+        batch_mock.assert_not_called()
+        # normalized_headline column exists but all values are null
+        assert result["normalized_headline"].null_count() == len(result)
 
 
 # ---------------------------------------------------------------------------

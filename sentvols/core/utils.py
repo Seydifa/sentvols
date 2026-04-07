@@ -57,7 +57,13 @@ def load_and_clean_news(csv_path: str) -> pl.DataFrame:
 
 
 @registration(module="utils")
-def annotate_news(df_news: pl.DataFrame, annotator, normalizer=None) -> pl.DataFrame:
+def annotate_news(
+    df_news: pl.DataFrame,
+    annotator,
+    normalizer=None,
+    batch_size: int = 256,
+    workers: int = 1,
+) -> pl.DataFrame:
     """Score and label news headlines.
 
     Parameters
@@ -65,11 +71,16 @@ def annotate_news(df_news: pl.DataFrame, annotator, normalizer=None) -> pl.DataF
     df_news : pl.DataFrame
         Must contain a ``headline`` column.
     annotator :
-        A ``FinancialVADERAnnotator`` instance (or any object with a
-        ``.score(text) -> float`` method).
+        A ``FinancialVADERAnnotator`` or ``FinancialLLMAnnotator`` instance
+        (any object with a ``score_batch(texts) -> list[float]`` method, or
+        a ``score(text) -> float`` method as fallback).
     normalizer : FinancialTextNormalizer or None, default None
-        Optional LLM pre-processing stage.  When provided, each headline is
-        passed through ``normalizer.normalize_if_needed()`` before scoring.
+        Optional LLM pre-processing stage.  When provided, headlines are
+        passed through ``normalize_if_needed_batch()`` before scoring —
+        short texts bypass the LLM, long texts are batched in chunks of
+        *batch_size* so the backend (vLLM, Transformers) can use PagedAttention
+        / padded-generate instead of one GPU call per row.
+
         Two extra columns are added to the output:
 
         * ``normalized_headline`` — the text actually scored (``null`` when
@@ -79,44 +90,67 @@ def annotate_news(df_news: pl.DataFrame, annotator, normalizer=None) -> pl.DataF
 
         When ``None``, the function behaves exactly as before — no extra
         columns, no breaking change.
+    batch_size : int, default 256
+        Maximum number of prompts sent to the LLM backend per call.  Tune
+        down to reduce GPU memory pressure; tune up to reduce round-trip
+        overhead with API-hosted backends.  Ignored when ``normalizer`` is
+        ``None``.
+    workers : int, default 1
+        Thread-pool size for backends that lack a ``batch_call()`` method.
+        Has no effect when the backend already exposes ``batch_call()``.
     """
-    if normalizer is None:
-        df = df_news.with_columns(
-            pl.col("headline")
-            .map_elements(annotator.score, return_dtype=pl.Float64)
-            .alias("sentiment_score")
-        )
-        return df.with_columns(
-            pl.when(pl.col("sentiment_score") >= 0.05)
-            .then(pl.lit("positif"))
-            .when(pl.col("sentiment_score") <= -0.05)
-            .then(pl.lit("négatif"))
-            .otherwise(pl.lit("neutre"))
-            .alias("sentiment_label")
-        )
-
-    # --- normalizer path ---------------------------------------------------
-    # Process each headline through the normalizer and collect results.
     headlines = df_news["headline"].to_list()
-    results = [normalizer.normalize_if_needed(h) for h in headlines]
 
+    # ── label helper (shared) ──────────────────────────────────────────────
+    def _make_label_col(scores: list[float]) -> pl.Series:
+        return pl.Series(
+            "sentiment_label",
+            [
+                "positif" if s >= 0.05 else ("négatif" if s <= -0.05 else "neutre")
+                for s in scores
+            ],
+            dtype=pl.Utf8,
+        )
+
+    # ── batch-score helper: prefers score_batch(), falls back to score() ──
+    def _batch_score(texts: list[str]) -> list[float]:
+        if hasattr(annotator, "score_batch"):
+            return annotator.score_batch(texts, workers=workers)
+        return [annotator.score(t) for t in texts]
+
+    # ── no-normalizer path ────────────────────────────────────────────────
+    if normalizer is None:
+        scores = _batch_score(headlines)
+        return df_news.with_columns(
+            pl.Series("sentiment_score", scores, dtype=pl.Float64),
+            _make_label_col(scores),
+        )
+
+    # ── normalizer path ───────────────────────────────────────────────────
+    if hasattr(normalizer, "normalize_if_needed_batch"):
+        results = normalizer.normalize_if_needed_batch(
+            headlines, batch_size=batch_size, workers=workers
+        )
+    else:
+        # Fallback for custom normalizer objects without the batch method
+        if workers > 1:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+
+            with _TPE(max_workers=workers) as pool:
+                results = list(pool.map(normalizer.normalize_if_needed, headlines))
+        else:
+            results = [normalizer.normalize_if_needed(h) for h in headlines]
+
+    texts_to_score = [r.normalized_text for r in results]
+    scores = _batch_score(texts_to_score)
     normalized_texts = [r.normalized_text if r.llm_used else None for r in results]
     reasoning_traces = [r.reasoning_trace for r in results]
-    # Score on the normalized text when the LLM was used, original otherwise.
-    scores = [annotator.score(r.normalized_text) for r in results]
 
-    df = df_news.with_columns(
+    return df_news.with_columns(
         pl.Series("sentiment_score", scores, dtype=pl.Float64),
         pl.Series("normalized_headline", normalized_texts, dtype=pl.Utf8),
         pl.Series("normalization_reasoning", reasoning_traces, dtype=pl.Utf8),
-    )
-    return df.with_columns(
-        pl.when(pl.col("sentiment_score") >= 0.05)
-        .then(pl.lit("positif"))
-        .when(pl.col("sentiment_score") <= -0.05)
-        .then(pl.lit("négatif"))
-        .otherwise(pl.lit("neutre"))
-        .alias("sentiment_label")
+        _make_label_col(scores),
     )
 
 
