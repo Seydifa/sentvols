@@ -627,3 +627,605 @@ def plot_score_explanation(
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()
     return fig
+
+
+@registration(module="plots")
+def plot_sentiment_features_overview(feat_df_pd, save_path: str | None = None):
+    """Distribution overview of sentiment feature columns.
+
+    Parameters
+    ----------
+    feat_df_pd : pd.DataFrame
+        Output of :func:`sentvols.features.build_sentiment_features` (or
+        :func:`build_full_feature_set`) converted to pandas.  Must contain
+        at least a subset of the columns defined in
+        :data:`sentvols.features.SENTIMENT_FEATURE_COLS`.
+    save_path : str | None
+        If provided, the figure is saved to this path at 150 dpi.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    from sentvols.features import SENTIMENT_FEATURE_COLS
+
+    feature_cols = [c for c in SENTIMENT_FEATURE_COLS if c in feat_df_pd.columns]
+    if not feature_cols:
+        fig, ax = plt.subplots(figsize=(6, 2))
+        ax.text(
+            0.5,
+            0.5,
+            "No sentiment feature columns found.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=11,
+        )
+        ax.axis("off")
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.show()
+        return fig
+
+    n_cols = 4
+    n_rows = (len(feature_cols) + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 3))
+    axes_flat = np.array(axes).flatten()
+
+    for i, col in enumerate(feature_cols):
+        ax = axes_flat[i]
+        data = feat_df_pd[col].dropna()
+        if data.nunique() <= 3:
+            counts = data.value_counts().sort_index()
+            ax.bar(
+                counts.index.astype(str),
+                counts.values,
+                color="#0055A4",
+                alpha=0.8,
+                edgecolor="white",
+            )
+        else:
+            ax.hist(data, bins=30, color="#0055A4", alpha=0.75, edgecolor="white")
+            if data.std() > 0:
+                xmin, xmax = ax.get_xlim()
+                x = np.linspace(xmin, xmax, 200)
+                ax.plot(
+                    x,
+                    scipy_stats.norm.pdf(x, data.mean(), data.std())
+                    * len(data)
+                    * (data.max() - data.min())
+                    / 30,
+                    color="#e74c3c",
+                    linewidth=1.5,
+                    linestyle="--",
+                )
+        ax.set_title(col, fontsize=9, fontweight="bold")
+        ax.set_ylabel("Fréquence", fontsize=7)
+        ax.tick_params(labelsize=7)
+        ax.grid(alpha=0.3, axis="y")
+
+    for j in range(len(feature_cols), len(axes_flat)):
+        axes_flat[j].axis("off")
+
+    fig.suptitle(
+        "Distribution des Features de Sentiment",
+        fontsize=13,
+        fontweight="bold",
+        y=1.01,
+    )
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return fig
+
+
+@registration(module="plots")
+def plot_market_betas(beta_df_pd, save_path: str | None = None):
+    """Beta and alpha distribution across tickers from the market model.
+
+    Parameters
+    ----------
+    beta_df_pd : pd.DataFrame
+        Output of :func:`sentvols.features.compute_market_betas` converted
+        to pandas.  Expected columns: ``ticker``, ``beta``, ``alpha``,
+        ``n_obs``.
+    save_path : str | None
+        If provided, the figure is saved to this path at 150 dpi.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    ax = axes[0]
+    betas = beta_df_pd["beta"].dropna()
+    ax.hist(betas, bins=30, color="#0055A4", alpha=0.8, edgecolor="white")
+    ax.axvline(
+        1.0, color="#e74c3c", linewidth=1.5, linestyle="--", label="β = 1 (marché)"
+    )
+    ax.axvline(
+        betas.mean(),
+        color="#27ae60",
+        linewidth=1.5,
+        label=f"Moyenne β = {betas.mean():.3f}",
+    )
+    ax.set_title("Distribution des Betas (β)", fontweight="bold")
+    ax.set_xlabel("Beta")
+    ax.set_ylabel("Nombre de titres")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    ax = axes[1]
+    alphas = beta_df_pd["alpha"].dropna() * 100
+    ax.hist(alphas, bins=30, color="#27ae60", alpha=0.8, edgecolor="white")
+    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.axvline(
+        alphas.mean(),
+        color="#e74c3c",
+        linewidth=1.5,
+        label=f"Moyenne α = {alphas.mean():.3f}%",
+    )
+    ax.set_title("Distribution des Alphas (α) [%]", fontweight="bold")
+    ax.set_xlabel("Alpha (%)")
+    ax.set_ylabel("Nombre de titres")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    ax = axes[2]
+    n_obs_col = (
+        beta_df_pd["n_obs"]
+        if "n_obs" in beta_df_pd.columns
+        else np.ones(len(beta_df_pd))
+    )
+    sc = ax.scatter(
+        beta_df_pd["beta"],
+        beta_df_pd["alpha"] * 100,
+        c=n_obs_col,
+        cmap="viridis",
+        alpha=0.6,
+        s=30,
+        edgecolors="none",
+    )
+    ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.axvline(1, color="#e74c3c", linewidth=0.8, linestyle="--", label="β = 1")
+    plt.colorbar(sc, ax=ax, label="n_obs")
+    ax.set_title("Alpha vs Beta par Titre", fontweight="bold")
+    ax.set_xlabel("Beta (β)")
+    ax.set_ylabel("Alpha (α) [%]")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    fig.suptitle("Estimation du Modèle de Marché (OLS)", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return fig
+
+
+@registration(module="plots")
+def plot_abnormal_returns(
+    df_pd,
+    col_ret: str = "ret",
+    col_ar: str = "abnormal_ret",
+    save_path: str | None = None,
+):
+    """Overlay of raw returns vs abnormal returns distributions.
+
+    Parameters
+    ----------
+    df_pd : pd.DataFrame
+        Panel DataFrame returned by :func:`sentvols.features.add_abnormal_returns`
+        converted to pandas.  Must contain ``col_ret`` and ``col_ar``.
+    col_ret : str
+        Raw return column name.
+    col_ar : str
+        Abnormal return column name.
+    save_path : str | None
+        If provided, the figure is saved to this path at 150 dpi.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    for ax, col, label, color in [
+        (axes[0], col_ret, "Rendement brut", "#0055A4"),
+        (axes[1], col_ar, "Rendement anormal (AR)", "#27ae60"),
+    ]:
+        data = df_pd[col].dropna()
+        ax.hist(
+            data,
+            bins=50,
+            color=color,
+            alpha=0.7,
+            edgecolor="white",
+            density=True,
+            label=label,
+        )
+        if data.std() > 0:
+            xmin, xmax = data.min(), data.max()
+            x = np.linspace(xmin, xmax, 300)
+            ax.plot(
+                x,
+                scipy_stats.norm.pdf(x, data.mean(), data.std()),
+                color="#e74c3c",
+                linewidth=2,
+                label="Normal fit",
+            )
+        ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+        ax.set_title(label, fontweight="bold")
+        ax.set_xlabel("Rendement")
+        ax.set_ylabel("Densité")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+        stats_txt = (
+            f"μ={data.mean():.4f}  σ={data.std():.4f}\n"
+            f"skew={scipy_stats.skew(data):.3f}  kurt={scipy_stats.kurtosis(data):.3f}"
+        )
+        ax.text(
+            0.97,
+            0.97,
+            stats_txt,
+            transform=ax.transAxes,
+            va="top",
+            ha="right",
+            fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#f0f4ff", edgecolor="#ccc"),
+        )
+
+    fig.suptitle(
+        "Distribution des Rendements : Bruts vs Anormaux",
+        fontsize=13,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return fig
+
+
+@registration(module="plots")
+def plot_ols_sentiment_results(ols_result: dict, save_path: str | None = None):
+    """Coefficient dot-plot with HC3 confidence intervals for OLS results.
+
+    Parameters
+    ----------
+    ols_result : dict
+        Output of :func:`sentvols.explainers.test_ols_sentiment_impact`.
+        Expected keys: ``feature_cols``, ``coefs``, ``se``, ``t_stats``,
+        ``p_values``, ``significant``, ``r_squared``, ``f_stat``,
+        ``f_pvalue``.
+    save_path : str | None
+        If provided, the figure is saved to this path at 150 dpi.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    feature_cols = ols_result["feature_cols"]
+    coefs = np.asarray(ols_result["coefs"])
+    se = np.asarray(ols_result["se"])
+    significant = np.asarray(ols_result["significant"])
+    r_sq = ols_result.get("r_squared", float("nan"))
+    f_stat = ols_result.get("f_stat", float("nan"))
+    f_pvalue = ols_result.get("f_pvalue", float("nan"))
+    n_obs = ols_result.get("n_obs", "?")
+
+    ci_95 = 1.96 * se
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(15, max(5, len(feature_cols) * 0.55 + 2)),
+        gridspec_kw={"width_ratios": [3, 1]},
+    )
+
+    ax = axes[0]
+    y_pos = np.arange(len(feature_cols))
+
+    ax.axvline(0, color="black", linewidth=1.0, linestyle="--", alpha=0.7)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(feature_cols, fontsize=9)
+    ax.invert_yaxis()
+    ax.set_xlabel("Coefficient OLS (IC 95 % HC3)", fontsize=9)
+    ax.set_title(
+        "Impact des Features de Sentiment sur le Rendement Anormal\n(OLS — HC3 robust SE)",
+        fontweight="bold",
+        fontsize=10,
+    )
+    ax.grid(alpha=0.3, axis="x")
+
+    max_coef = np.nanmax(np.abs(coefs)) if len(coefs) > 0 else 1.0
+    for idx, (coef, y, sig) in enumerate(zip(coefs, y_pos, significant)):
+        ec = "#e74c3c" if sig else "#bdc3c7"
+        ax.errorbar(
+            coef, y, xerr=ci_95[idx], fmt="none", ecolor=ec, elinewidth=1.2, capsize=4
+        )
+        x_off = ci_95[idx] + max_coef * 0.02
+        ax.text(
+            coef + x_off if coef >= 0 else coef - x_off,
+            y,
+            f"{coef:+.4f}",
+            va="center",
+            ha="left" if coef >= 0 else "right",
+            fontsize=7.5,
+        )
+
+    colors = ["#e74c3c" if sig else "#95a5a6" for sig in significant]
+    ax.scatter(
+        coefs, y_pos, c=colors, s=80, zorder=5, edgecolors="white", linewidths=0.5
+    )
+
+    alpha_level = ols_result.get("alpha_level", 0.05)
+    legend_handles = [
+        Patch(facecolor="#e74c3c", label=f"Significatif (p < {alpha_level})"),
+        Patch(facecolor="#95a5a6", label="Non significatif"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=8, loc="lower right")
+
+    ax2 = axes[1]
+    ax2.axis("off")
+    n_sig = int(significant.sum())
+    summary_txt = (
+        f"n_obs = {n_obs}\n\n"
+        f"R² = {r_sq:.4f}\n\n"
+        f"F = {f_stat:.3f}\n"
+        f"p(F) = {f_pvalue:.4f}\n\n"
+        f"Sig. features:\n{n_sig} / {len(feature_cols)}"
+    )
+    ax2.text(
+        0.5,
+        0.65,
+        summary_txt,
+        ha="center",
+        va="center",
+        transform=ax2.transAxes,
+        fontsize=10,
+        family="monospace",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#f0f0f0", edgecolor="#ccc"),
+    )
+    sig_color = "#27ae60" if n_sig > 0 else "#7f8c8d"
+    ax2.text(
+        0.5,
+        0.15,
+        f"{n_sig} SIG.",
+        ha="center",
+        va="center",
+        transform=ax2.transAxes,
+        fontsize=13,
+        fontweight="bold",
+        color=sig_color,
+    )
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return fig
+
+
+@registration(module="plots")
+def plot_portfolio_weights(
+    portfolio_pd,
+    col_period: str = "period",
+    col_weight: str = "weight",
+    col_ticker: str = "ticker",
+    save_path: str | None = None,
+):
+    """Visualise portfolio weight distributions across periods.
+
+    Parameters
+    ----------
+    portfolio_pd : pd.DataFrame
+        Output of :meth:`sentvols.portfolio.PortfolioBuilder.build` converted
+        to pandas.  Expected columns: ``col_period``, ``col_ticker``,
+        ``col_weight``.
+    col_period, col_weight, col_ticker : str
+        Column name overrides.
+    save_path : str | None
+        If provided, the figure is saved to this path at 150 dpi.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax = axes[0]
+    weights = portfolio_pd[col_weight].dropna()
+    ax.hist(weights, bins=40, color="#0055A4", alpha=0.8, edgecolor="white")
+    ax.axvline(
+        weights.mean(),
+        color="#e74c3c",
+        linewidth=1.5,
+        linestyle="--",
+        label=f"Moyenne = {weights.mean():.4f}",
+    )
+    ax.set_title("Distribution Globale des Poids", fontweight="bold")
+    ax.set_xlabel("Poids")
+    ax.set_ylabel("Fréquence")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    ax = axes[1]
+    periods = sorted(portfolio_pd[col_period].dropna().unique())
+    data_per_period = [
+        portfolio_pd.loc[portfolio_pd[col_period] == p, col_weight].dropna().values
+        for p in periods
+    ]
+    max_periods = 20
+    if len(periods) > max_periods:
+        step = max(1, len(periods) // max_periods)
+        periods = periods[::step]
+        data_per_period = data_per_period[::step]
+
+    ax.boxplot(
+        data_per_period,
+        tick_labels=[str(p) for p in periods],
+        patch_artist=True,
+        boxprops=dict(facecolor="#d5e8f7", color="#0055A4"),
+        medianprops=dict(color="#e74c3c", linewidth=1.5),
+        whiskerprops=dict(color="#0055A4"),
+        capprops=dict(color="#0055A4"),
+        flierprops=dict(marker=".", color="#0055A4", alpha=0.4, markersize=3),
+    )
+    ax.set_title("Poids par Période (Boxplot)", fontweight="bold")
+    ax.set_xlabel("Période")
+    ax.set_ylabel("Poids")
+    ax.tick_params(axis="x", rotation=45, labelsize=7)
+    ax.grid(alpha=0.3, axis="y")
+
+    fig.suptitle(
+        "Distribution des Poids du Portefeuille", fontsize=13, fontweight="bold"
+    )
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return fig
+
+
+@registration(module="plots")
+def plot_portfolio_manager_history(
+    trade_history_pd,
+    col_period: str = "period",
+    col_action: str = "action",
+    col_cash: str = "cash_after",
+    col_ticker: str = "ticker",
+    save_path: str | None = None,
+):
+    """Visualise PortfolioManager trade history: cash curve, buy/sell events, positions.
+
+    Parameters
+    ----------
+    trade_history_pd : pd.DataFrame
+        Output of :attr:`sentvols.portfolio.PortfolioManager.trade_history`
+        converted to pandas.  Expected columns: ``col_period``,
+        ``col_action`` (``"buy"`` / ``"sell"``), ``col_cash``, ``col_ticker``.
+    col_period, col_action, col_cash, col_ticker : str
+        Column name overrides.
+    save_path : str | None
+        If provided, the figure is saved to this path at 150 dpi.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    if trade_history_pd.empty:
+        fig, ax = plt.subplots(figsize=(8, 2))
+        ax.text(
+            0.5,
+            0.5,
+            "No trades recorded.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=11,
+        )
+        ax.axis("off")
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.show()
+        return fig
+
+    fig, axes = plt.subplots(3, 1, figsize=(13, 11), sharex=False)
+
+    periods = sorted(trade_history_pd[col_period].unique())
+    period_idx = {p: i for i, p in enumerate(periods)}
+
+    # --- cash curve ---
+    ax = axes[0]
+    cash_per_period = trade_history_pd.groupby(col_period)[col_cash].last()
+    cp_x = [period_idx[p] for p in cash_per_period.index]
+    ax.plot(
+        cp_x,
+        cash_per_period.values,
+        color="#0055A4",
+        linewidth=2,
+        marker="o",
+        markersize=4,
+        label="Cash après opération",
+    )
+    ax.fill_between(cp_x, cash_per_period.values, alpha=0.15, color="#0055A4")
+    ax.set_title("Évolution de la Trésorerie", fontweight="bold")
+    ax.set_ylabel("Cash (€)")
+    step_x = max(1, len(cp_x) // 15)
+    ax.set_xticks(cp_x[::step_x])
+    ax.set_xticklabels(
+        [str(periods[i]) for i in cp_x[::step_x]],
+        rotation=45,
+        ha="right",
+        fontsize=7,
+    )
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    # --- buy/sell event markers ---
+    ax = axes[1]
+    buys = trade_history_pd[trade_history_pd[col_action] == "buy"]
+    sells = trade_history_pd[trade_history_pd[col_action] == "sell"]
+    buy_x = [period_idx[p] for p in buys[col_period]]
+    sell_x = [period_idx[p] for p in sells[col_period]]
+    ax.scatter(
+        buy_x,
+        np.ones(len(buy_x)),
+        marker="^",
+        color="#27ae60",
+        s=60,
+        alpha=0.7,
+        label=f"Achat ({len(buys)})",
+    )
+    ax.scatter(
+        sell_x,
+        np.zeros(len(sell_x)),
+        marker="v",
+        color="#e74c3c",
+        s=60,
+        alpha=0.7,
+        label=f"Vente ({len(sells)})",
+    )
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["Vente", "Achat"])
+    ax.set_title("Événements Buy / Sell", fontweight="bold")
+    ax.set_xticks(cp_x[::step_x])
+    ax.set_xticklabels(
+        [str(periods[i]) for i in cp_x[::step_x]],
+        rotation=45,
+        ha="right",
+        fontsize=7,
+    )
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3, axis="x")
+
+    # --- position count per period ---
+    ax = axes[2]
+    n_pos_per_period = trade_history_pd.groupby(col_period)[col_ticker].nunique()
+    pp_x = [period_idx[p] for p in n_pos_per_period.index]
+    ax.bar(pp_x, n_pos_per_period.values, color="#8e44ad", alpha=0.8, edgecolor="white")
+    ax.set_title("Nombre de Positions Distinctes par Période", fontweight="bold")
+    ax.set_ylabel("Nb. titres")
+    step_pp = max(1, len(pp_x) // 15)
+    ax.set_xticks(pp_x[::step_pp])
+    ax.set_xticklabels(
+        [str(periods[i]) for i in pp_x[::step_pp]],
+        rotation=45,
+        ha="right",
+        fontsize=7,
+    )
+    ax.grid(alpha=0.3, axis="y")
+
+    fig.suptitle(
+        "Historique du Gestionnaire de Portefeuille",
+        fontsize=13,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return fig
