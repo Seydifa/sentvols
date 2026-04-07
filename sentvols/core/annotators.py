@@ -781,18 +781,42 @@ class FinancialLLMAnnotator:
         return {"score": s, "label": self.label(s)}
 
     def score_batch(self, texts: list[str], workers: int = 1) -> list[float]:
-        """Score a list of texts.  Set *workers* > 1 for parallel LLM calls."""
+        """Score a list of texts.
+
+        When the backend exposes ``batch_call()``, all prompts are submitted
+        as a single request (e.g. vLLM PagedAttention, Transformers padded
+        generate) for maximum GPU utilisation.  Set *workers* > 1 to
+        parallelise over backends that only support per-prompt ``call()``.
+        """
+        if not texts:
+            return []
+        if hasattr(self._backend, "batch_call"):
+            prompts = [
+                self._prompt.replace("{text}", (t or "")[: self._max_article_chars], 1)
+                for t in texts
+            ]
+            return [
+                self._parse_score(raw) for raw, _ in self._backend.batch_call(prompts)
+            ]
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 return list(pool.map(self.score, texts))
         return [self.score(t) for t in texts]
 
     def annotate_batch(self, texts: list[str], workers: int = 1) -> list[dict]:
-        """Annotate a list of texts."""
-        if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                return list(pool.map(self.annotate, texts))
-        return [self.annotate(t) for t in texts]
+        """Annotate a list of texts.
+
+        Uses ``batch_call()`` when available (same backend path as
+        ``score_batch``), otherwise falls back to per-text scoring.
+        """
+        scores = self.score_batch(texts, workers=workers)
+        return [
+            {
+                "score": s,
+                "label": self.label(s),
+            }
+            for s in scores
+        ]
 
     # ------------------------------------------------------------------
     # Article-level scoring

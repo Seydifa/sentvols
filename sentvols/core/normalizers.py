@@ -521,6 +521,43 @@ class TransformersBackend:
             out_ids = mdl.generate(**inputs, max_new_tokens=self._max_new_tokens)
         return tok.decode(out_ids[0], skip_special_tokens=True).strip(), None
 
+    def batch_call(self, prompts: list[str]) -> list[tuple[str, None]]:
+        """Tokenize and generate for all *prompts* in a single padded GPU call.
+
+        The tokenizer left-pads the batch so all sequences reach the same
+        length and ``generate()`` is called once, which is significantly
+        faster than one ``call()`` per prompt when the batch is large.
+        """
+        if not prompts:
+            return []
+        # Ensure pipeline is initialised (reuses call() lazy-init path)
+        if self._pipe is None:
+            self.call(prompts[0])
+        tok, mdl = self._pipe
+        import torch
+
+        # Left-padding makes the model read the end of each prompt correctly
+        orig_side = tok.padding_side
+        tok.padding_side = "left"
+        if tok.pad_token_id is None:
+            tok.pad_token_id = tok.eos_token_id
+        try:
+            _input_device = next(mdl.parameters()).device
+            inputs = tok(
+                list(prompts),
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512,
+            ).to(_input_device)
+            with torch.no_grad():
+                out_ids = mdl.generate(**inputs, max_new_tokens=self._max_new_tokens)
+        finally:
+            tok.padding_side = orig_side
+        return [
+            (tok.decode(ids, skip_special_tokens=True).strip(), None) for ids in out_ids
+        ]
+
     def __repr__(self) -> str:
         return f"TransformersBackend(model={self._model!r}, device={self._device!r})"
 
@@ -646,6 +683,10 @@ class LlamaCppBackend:
         Context window size (tokens).
     n_threads : int or None, default None
         Number of CPU threads.  ``None`` lets llama.cpp choose automatically.
+    n_gpu_layers : int, default 0
+        Number of model layers to offload to GPU via llama.cpp CUDA/Metal
+        support.  Set ``-1`` to offload all layers (full GPU inference).
+        Requires a CUDA/Metal build of ``llama-cpp-python``.
     max_tokens : int, default 256
         Maximum tokens to generate per call.
 
@@ -654,6 +695,8 @@ class LlamaCppBackend:
     >>> backend = LlamaCppBackend("/models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
     >>> norm = FinancialTextNormalizer(backend=backend)
     >>> result = norm.normalize(long_article, mode="extract")
+    >>> # Full GPU offload on Colab L4:
+    >>> backend_gpu = LlamaCppBackend(gguf_path, n_gpu_layers=-1)
     """
 
     def __init__(
@@ -661,11 +704,13 @@ class LlamaCppBackend:
         model_path: str,
         n_ctx: int = 2048,
         n_threads: int | None = None,
+        n_gpu_layers: int = 0,
         max_tokens: int = 256,
     ) -> None:
         self._model_path = model_path
         self._n_ctx = n_ctx
         self._n_threads = n_threads
+        self._n_gpu_layers = n_gpu_layers
         self._max_tokens = max_tokens
         self._llm = None  # lazy-loaded on first call
 
@@ -698,6 +743,7 @@ class LlamaCppBackend:
                 model_path=self._model_path,
                 n_ctx=self._n_ctx,
                 n_threads=self._n_threads,
+                n_gpu_layers=self._n_gpu_layers,
                 verbose=False,
             )
 
@@ -713,7 +759,8 @@ class LlamaCppBackend:
 
         return (
             f"LlamaCppBackend(model={os.path.basename(self._model_path)!r}, "
-            f"n_ctx={self._n_ctx}, n_threads={self._n_threads})"
+            f"n_ctx={self._n_ctx}, n_threads={self._n_threads}, "
+            f"n_gpu_layers={self._n_gpu_layers})"
         )
 
 

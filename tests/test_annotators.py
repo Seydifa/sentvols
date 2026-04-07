@@ -509,7 +509,9 @@ class TestNegationAwarePhrases:
         # Negated phrase IS detected and listed — but with negated=True and
         # a flipped (positive) adjustment so the final score is non-negative.
         assert "profit warning" in phrase_names
-        match = next(ph for ph in exp["phrase_hits"] if ph["phrase"] == "profit warning")
+        match = next(
+            ph for ph in exp["phrase_hits"] if ph["phrase"] == "profit warning"
+        )
         assert match["negated"] is True
         assert match["adjustment"] > 0  # signal flipped: was -2.5, now +2.5
         assert exp["final_score"] > -0.05  # sentence is no longer scored negative
@@ -708,6 +710,78 @@ class TestFinancialLLMAnnotator:
         assert len(results) == 2
         for r in results:
             assert "score" in r and "label" in r
+
+    def test_score_batch_uses_batch_call_when_available(self):
+        """score_batch() must delegate to backend.batch_call() in a single call."""
+        from sentvols.core.annotators import FinancialLLMAnnotator
+
+        texts = ["Earnings beat", "Dividend cut", "Neutral report"]
+        replies = [("0.8", None), ("-0.6", None), ("0.0", None)]
+
+        batch_mock = MagicMock(return_value=replies)
+
+        class _BatchBackend:
+            model = "batch-model"
+            reasoning_available = False
+            call = MagicMock(return_value=("0.0", None))  # should NOT be called
+            batch_call = batch_mock
+
+        ann = FinancialLLMAnnotator(_BatchBackend())
+        scores = ann.score_batch(texts)
+
+        batch_mock.assert_called_once()  # exactly one batched call
+        _BatchBackend.call.assert_not_called()  # per-text call must be bypassed
+        assert len(scores) == 3
+        assert scores[0] == pytest.approx(0.8)
+        assert scores[1] == pytest.approx(-0.6)
+        assert scores[2] == pytest.approx(0.0)
+
+    def test_annotate_batch_uses_batch_call_when_available(self):
+        """annotate_batch() returns correct labels when batch_call is used."""
+        from sentvols.core.annotators import FinancialLLMAnnotator
+
+        replies = [("0.7", None), ("-0.7", None)]
+        batch_mock = MagicMock(return_value=replies)
+
+        class _BatchBackend:
+            model = "batch-model"
+            reasoning_available = False
+            call = MagicMock(return_value=("0.0", None))
+            batch_call = batch_mock
+
+        ann = FinancialLLMAnnotator(_BatchBackend())
+        results = ann.annotate_batch(["Strong buy", "Bankruptcy"])
+
+        assert results[0]["label"] == "positif"
+        assert results[1]["label"] == "négatif"
+        batch_mock.assert_called_once()
+
+    def test_score_batch_empty_with_batch_call(self):
+        """score_batch([]) returns [] immediately without calling batch_call."""
+        from sentvols.core.annotators import FinancialLLMAnnotator
+
+        batch_mock = MagicMock(return_value=[])
+
+        class _BatchBackend:
+            model = "batch-model"
+            reasoning_available = False
+            call = MagicMock(return_value=("0.0", None))
+            batch_call = batch_mock
+
+        ann = FinancialLLMAnnotator(_BatchBackend())
+        assert ann.score_batch([]) == []
+        batch_mock.assert_not_called()
+
+    def test_score_batch_fallback_loop_when_no_batch_call(self):
+        """Backends without batch_call still work via per-item call() loop."""
+        from sentvols.core.annotators import FinancialLLMAnnotator
+
+        texts = ["text1", "text2"]
+        b = self._make_backend("0.5")
+        ann = FinancialLLMAnnotator(b)
+        scores = ann.score_batch(texts)
+        assert len(scores) == 2
+        assert b.call.call_count == len(texts)
 
     def test_score_article_single_llm_call(self):
         """LLM annotator sends the whole article in one call, not per sentence."""

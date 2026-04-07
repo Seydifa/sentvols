@@ -264,8 +264,6 @@ class TestAnthropicBackend:
 class TestTransformersBackend:
     def _make_backend_with_mocked_pipe(self, decoded_text: str):
         """Build a TransformersBackend whose (tok, mdl, device) tuple is mocked."""
-        import torch
-
         backend = TransformersBackend.__new__(TransformersBackend)
         backend._model = "some/local-model"
         backend._device = "cpu"
@@ -288,6 +286,7 @@ class TestTransformersBackend:
         return backend
 
     def test_call_returns_text(self):
+        pytest.importorskip("torch")  # TransformersBackend.call() requires torch
         backend = self._make_backend_with_mocked_pipe("Local model output.")
         text, trace = backend.call("summarize this")
         assert text == "Local model output."
@@ -300,6 +299,102 @@ class TestTransformersBackend:
         backend._max_new_tokens = 256
         backend._pipe = None
         assert backend.reasoning_available is False
+
+    def test_batch_call_returns_one_result_per_prompt(self):
+        pytest.importorskip("torch")
+        import torch
+
+        backend = TransformersBackend.__new__(TransformersBackend)
+        backend._model = "some/local-model"
+        backend._device = "cpu"
+        backend._max_new_tokens = 8
+        backend._torch_dtype = None
+        backend._device_map = None
+
+        prompts = ["prompt A", "prompt B", "prompt C"]
+        decoded = ["out A", "out B", "out C"]
+
+        mock_tok = MagicMock()
+        mock_tok.padding_side = "right"
+        mock_tok.pad_token_id = 0
+        mock_inputs = MagicMock()
+        mock_inputs.to.return_value = mock_inputs
+        mock_tok.return_value = mock_inputs
+        mock_tok.decode.side_effect = lambda ids, skip_special_tokens=True: decoded.pop(
+            0
+        )
+
+        mock_mdl = MagicMock()
+        fake_ids = [torch.zeros(4, dtype=torch.long) for _ in prompts]
+        mock_mdl.generate.return_value = fake_ids
+        mock_mdl.parameters.return_value = iter([torch.zeros(1)])
+
+        backend._pipe = (mock_tok, mock_mdl)
+
+        results = backend.batch_call(prompts)
+        assert len(results) == len(prompts)
+        for text, trace in results:
+            assert isinstance(text, str)
+            assert trace is None
+        # generate() must have been called exactly once (true batching)
+        mock_mdl.generate.assert_called_once()
+
+    def test_batch_call_empty_list(self):
+        backend = TransformersBackend.__new__(TransformersBackend)
+        backend._model = "x"
+        backend._device = "cpu"
+        backend._max_new_tokens = 8
+        backend._torch_dtype = None
+        backend._device_map = None
+        backend._pipe = None
+        assert backend.batch_call([]) == []
+
+    def test_batch_call_restores_padding_side(self):
+        """batch_call must restore tok.padding_side even if generate raises."""
+        pytest.importorskip("torch")
+        import torch
+
+        backend = TransformersBackend.__new__(TransformersBackend)
+        backend._model = "x"
+        backend._device = "cpu"
+        backend._max_new_tokens = 8
+        backend._torch_dtype = None
+        backend._device_map = None
+
+        mock_tok = MagicMock()
+        mock_tok.padding_side = "right"  # original value
+        mock_tok.pad_token_id = 0
+        mock_inputs = MagicMock()
+        mock_inputs.to.return_value = mock_inputs
+        mock_tok.return_value = mock_inputs
+
+        mock_mdl = MagicMock()
+        mock_mdl.generate.side_effect = RuntimeError("generation failed")
+        mock_mdl.parameters.return_value = iter([torch.zeros(1)])
+
+        backend._pipe = (mock_tok, mock_mdl)
+        with pytest.raises(RuntimeError):
+            backend.batch_call(["p"])
+        assert mock_tok.padding_side == "right"
+
+
+# ---------------------------------------------------------------------------
+# NormalizerBackend — batch_call capability check
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizerBackendBatchCallDefault:
+    """batch_call is an optional capability, only present on backends that declare it."""
+
+    def test_backends_without_batch_call_not_detected_by_hasattr(self):
+        """Standard backends (OpenAI, Anthropic …) do NOT expose batch_call."""
+        client = _mock_openai_client("x")
+        backend = OpenAIBackend(client=client, model="gpt-4o")
+        assert not hasattr(backend, "batch_call")
+
+    def test_transformers_backend_exposes_batch_call(self):
+        """TransformersBackend must have batch_call (true padded-generate batch)."""
+        assert hasattr(TransformersBackend, "batch_call")
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +537,7 @@ class TestLlamaCppBackend:
         backend._model_path = "/models/qwen2.5-0.5b-q4_k_m.gguf"
         backend._n_ctx = 2048
         backend._n_threads = None
+        backend._n_gpu_layers = 0
         backend._max_tokens = 256
         mock_llm = MagicMock()
         mock_llm.create_chat_completion.return_value = {
