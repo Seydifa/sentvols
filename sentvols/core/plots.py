@@ -1229,3 +1229,176 @@ def plot_portfolio_manager_history(
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()
     return fig
+
+
+@registration(module="plots")
+def plot_method_comparison(
+    results: dict,
+    save_path: str | None = None,
+):
+    """Four-panel dashboard comparing portfolio metrics across annotation methods.
+
+    Parameters
+    ----------
+    results : dict
+        Mapping ``{method_name: metrics_dict}`` where each ``metrics_dict``
+        contains at minimum:
+
+        * ``equity_curve``  — list of ``{"date": ..., "value": float}``
+        * ``sharpe``        — Sharpe ratio (float)
+        * ``ann_ret``       — annualised portfolio return (float)
+        * ``max_drawdown``  — maximum drawdown as a negative fraction (float)
+        * ``f1``            — classifier F1 score on the test split (float)
+        * ``ic``            — Information Coefficient (float)
+
+        All keys except ``equity_curve`` are optional but improve the plot.
+    save_path : str | None
+        If provided, the figure is saved to this path at 150 dpi.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import pandas as _pd
+
+    methods = list(results.keys())
+    n = len(methods)
+
+    _palette = [
+        "#0055A4",
+        "#e74c3c",
+        "#27ae60",
+        "#8e44ad",
+        "#f39c12",
+        "#1abc9c",
+        "#d35400",
+        "#2980b9",
+        "#c0392b",
+        "#16a085",
+    ]
+    colors = [_palette[i % len(_palette)] for i in range(n)]
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 11))
+    fig.suptitle(
+        "Comparaison des Méthodes d'Annotation — Pipeline sentvols",
+        fontsize=14,
+        fontweight="bold",
+    )
+
+    # ── Panel 1 : Overlaid equity curves ──────────────────────────────────
+    ax1 = axes[0, 0]
+    initial_val = None
+    for method, color in zip(methods, colors):
+        ec = results[method].get("equity_curve", [])
+        if not ec:
+            continue
+        df_ec = _pd.DataFrame(ec)
+        dates = _pd.to_datetime(df_ec["date"])
+        values = df_ec["value"].values
+        if initial_val is None:
+            initial_val = values[0] if values[0] > 0 else 1.0
+        cum_ret = (values / initial_val - 1) * 100
+        ax1.plot(dates, cum_ret, color=color, linewidth=1.8, label=method)
+
+    ax1.axhline(0, color="black", linewidth=0.7, linestyle="--")
+    ax1.set_title("Courbes de Valeur Cumulée (test)", fontweight="bold")
+    ax1.set_xlabel("Date")
+    ax1.set_ylabel("Rendement cumulé (%)")
+    ax1.legend(fontsize=8, loc="upper left")
+    ax1.grid(alpha=0.3)
+
+    # ── Panel 2 : Sharpe bar chart (sorted descending) ────────────────────
+    ax2 = axes[0, 1]
+    sharpes = [results[m].get("sharpe", float("nan")) for m in methods]
+    order = np.argsort(sharpes)[::-1]
+    s_methods = [methods[i] for i in order]
+    s_sharpes = [sharpes[i] for i in order]
+    s_colors = [colors[i] for i in order]
+    bars = ax2.bar(range(n), s_sharpes, color=s_colors, alpha=0.85, edgecolor="white")
+    ax2.axhline(0, color="black", linewidth=0.8)
+    ax2.set_xticks(range(n))
+    ax2.set_xticklabels(s_methods, rotation=30, ha="right", fontsize=9)
+    ax2.set_title("Ratio de Sharpe (annualisé)", fontweight="bold")
+    ax2.set_ylabel("Sharpe")
+    ax2.grid(alpha=0.3, axis="y")
+    for bar, val in zip(bars, s_sharpes):
+        if not np.isnan(val):
+            ax2.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.02 * (1 if val >= 0 else -1),
+                f"{val:.3f}",
+                ha="center",
+                va="bottom" if val >= 0 else "top",
+                fontsize=8,
+            )
+
+    # ── Panel 3 : F1 vs IC scatter ────────────────────────────────────────
+    ax3 = axes[1, 0]
+    for method, color in zip(methods, colors):
+        f1 = results[method].get("f1", float("nan"))
+        ic = results[method].get("ic", float("nan"))
+        if np.isnan(f1) or np.isnan(ic):
+            continue
+        ax3.scatter(
+            f1, ic, color=color, s=120, zorder=5, edgecolors="white", linewidths=0.8
+        )
+        ax3.annotate(
+            method,
+            (f1, ic),
+            textcoords="offset points",
+            xytext=(6, 3),
+            fontsize=8,
+            color=color,
+        )
+    ax3.axhline(0, color="black", linewidth=0.8, linestyle="--")
+    ax3.axvline(0.5, color="black", linewidth=0.8, linestyle=":")
+    ax3.set_xlabel("F1 Score (classifieur test)")
+    ax3.set_ylabel("IC — Information Coefficient")
+    ax3.set_title("F1 vs IC par Méthode", fontweight="bold")
+    ax3.grid(alpha=0.3)
+
+    # ── Panel 4 : Ann. return & max drawdown bar chart ────────────────────
+    ax4 = axes[1, 1]
+    x_pos = np.arange(n)
+    width = 0.38
+    ann_rets = (
+        np.array([results[m].get("ann_ret", float("nan")) for m in methods]) * 100
+    )
+    max_dds = (
+        np.array([results[m].get("max_drawdown", float("nan")) for m in methods]) * 100
+    )
+
+    valid_ret = ~np.isnan(ann_rets)
+    valid_dd = ~np.isnan(max_dds)
+    ax4.bar(
+        x_pos[valid_ret] - width / 2,
+        ann_rets[valid_ret],
+        width,
+        color=[colors[i] for i in np.where(valid_ret)[0]],
+        alpha=0.85,
+        label="Rdt. annualisé (%)",
+        edgecolor="white",
+    )
+    ax4.bar(
+        x_pos[valid_dd] + width / 2,
+        max_dds[valid_dd],
+        width,
+        color=[colors[i] for i in np.where(valid_dd)[0]],
+        alpha=0.5,
+        label="Max drawdown (%)",
+        edgecolor="white",
+        hatch="//",
+    )
+    ax4.axhline(0, color="black", linewidth=0.8)
+    ax4.set_xticks(x_pos)
+    ax4.set_xticklabels(methods, rotation=30, ha="right", fontsize=9)
+    ax4.set_ylabel("(%)")
+    ax4.set_title("Rendement Annualisé & Max Drawdown", fontweight="bold")
+    ax4.legend(fontsize=8)
+    ax4.grid(alpha=0.3, axis="y")
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return fig

@@ -19,6 +19,8 @@ dependencies = [
     "matplotlib>=3.7",
     "seaborn>=0.13",
     "scipy>=1.11",
+    "tqdm>=4.64",
+    "huggingface_hub>=0.20",
 ]
 
 [project.optional-dependencies]

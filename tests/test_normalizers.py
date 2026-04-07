@@ -467,9 +467,7 @@ class TestFinancialTextNormalizer:
 
     def _make_batch_normalizer(self, replies: list[str]):
         """Normalizer whose backend.batch_call() returns the given replies."""
-        batch_mock = MagicMock(
-            return_value=[(r, None) for r in replies]
-        )
+        batch_mock = MagicMock(return_value=[(r, None) for r in replies])
 
         class _BatchBackend:
             model = "batch-mock"
@@ -522,8 +520,7 @@ class TestFinancialTextNormalizer:
         batch_mock.return_value = [("r", None)] * 3  # first call returns 3
         # patch to return correct sizes per chunk
         batch_mock.side_effect = [
-            [("r", None)] * min(3, n - i * 3)
-            for i in range((n + 2) // 3)
+            [("r", None)] * min(3, n - i * 3) for i in range((n + 2) // 3)
         ]
         norm.normalize_if_needed_batch(long_texts, threshold_chars=10, batch_size=3)
         assert batch_mock.call_count == 3
